@@ -1,0 +1,15 @@
+Package: ORFquant
+Title: Splice-aware Quantification of ORF translation
+Author: Lorenzo Calviello [aut,cre], Uwe Ohler [rev,fnd]
+Maintainer: Lorenzo Calviello <calviello.l.bio@gmail.com>
+Description: ORFquant is a method that annotates and quantifies translation at the single ORF level using Ribo-seq data.
+Depends: R (>= 3.6.0), rtracklayer, BSgenome, Biostrings, GenomicFeatures, multitaper, GenomicAlignments, GenomicFiles, ggplot2, cowplot, grid, BiocGenerics, knitr, gridExtra, rmarkdown
+Imports: BiocParallel, GenomicRanges, Rsamtools, magrittr, tidyr, methods
+Suggests: devtools, testthat, Gviz
+License: GPL-3 or above
+Encoding: UTF-8
+LazyData: FALSE
+biocViews: RiboSeq, GenomeAnnotation, Transcriptomics, Software
+Name: ORFquant
+Version: 1.3.1
+RoxygenNote: 7.3.0
