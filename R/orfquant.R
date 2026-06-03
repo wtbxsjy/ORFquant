@@ -1,12 +1,9 @@
 # ORFquant, a software to perform splice-aware
 # Compatibility wrapper for reshape2::melt using tidyr
-# This function provides backward-compatible melt() functionality
-.melt_compat <- function(data, ...) {
+melt <- function(data, ...) {
     if (inherits(data, "table")) {
-        # For table objects, convert to data frame with Var1, Var2, value columns
         as.data.frame(data)
     } else if (inherits(data, "data.frame")) {
-        # For data frames, use tidyr::pivot_longer
         tidyr::pivot_longer(
             data,
             cols = tidyr::everything(),
@@ -14,12 +11,9 @@
             values_to = "value"
         )
     } else {
-        # Fallback
         as.data.frame(data)
     }
 }
-# Alias melt to our compatibility function
-melt <- .melt_compat
 
 # quantification of ORF translation using Ribo-seq data
 #
@@ -124,8 +118,8 @@ clear_dpss_cache <- function() {
 get_orfs <- function(
     tx_name,
     sequence,
-    get_all_starts = T,
-    Stop_Stop = F,
+    get_all_starts = TRUE,
+    Stop_Stop = FALSE,
     scores = c(1, .5),
     genetic_code_table
 ) {
@@ -146,14 +140,14 @@ get_orfs <- function(
 
         stops <- pept == "*"
 
-        start_pos <- ((1:length(pept))[starts]) * 3
+        start_pos <- ((seq_along(pept))[starts]) * 3
         if (length(start_pos) > 0) {
             start_pos <- start_pos + u - 2
         } else {
             start_pos <- NA
         }
 
-        stop_pos <- ((1:length(pept))[stops]) * 3 - 3
+        stop_pos <- ((seq_along(pept))[stops]) * 3 - 3
         if (length(stop_pos) > 0) {
             stop_pos <- stop_pos + u
         } else {
@@ -161,7 +155,7 @@ get_orfs <- function(
         }
 
         st2vect <- c()
-        for (h in 1:length(start_pos)) {
+        for (h in seq_along(start_pos)) {
             st1 <- start_pos[h]
             diff <- stop_pos - st1
             diff <- diff[diff > 0]
@@ -173,10 +167,10 @@ get_orfs <- function(
             }
             st2vect[h] <- st2
         }
-        st_st <- data.frame(cbind(start_pos, st2vect), stringsAsFactors = F)
+        st_st <- data.frame(cbind(start_pos, st2vect))
         st_st <- st_st[!is.na(st_st[, 1]), ]
         st_st <- st_st[!is.na(st_st[, 2]), ]
-        if (dim(st_st)[1] == 0) {
+        if (nrow(st_st) == 0) {
             list_frames[[paste("frame", u, sep = "_")]] <- GRanges()
             next
         }
@@ -190,14 +184,14 @@ get_orfs <- function(
             list_frames[[paste("frame", u, sep = "_")]] <- GRanges()
             next
         }
-        if (get_all_starts == T) {
+        if (get_all_starts == TRUE) {
             gra_orf <- GRanges(
                 seqnames = paste(tx_name, "frame", u, sep = "_"),
                 strand = "+",
                 ranges = IRanges(start = st_st[, 1], end = st_st[, 2])
             )
         }
-        if (get_all_starts == F) {
+        if (get_all_starts == FALSE) {
             gra_orf <- reduce(GRanges(
                 seqnames = paste(tx_name, "frame", u, sep = "_"),
                 strand = "*",
@@ -210,9 +204,9 @@ get_orfs <- function(
         }
 
         gra_par <- GRanges()
-        if (Stop_Stop == T) {
+        if (Stop_Stop == TRUE) {
             stops <- pept == "*"
-            stop_pos <- ((1:length(pept))[stops]) * 3
+            stop_pos <- ((seq_along(pept))[stops]) * 3
             if (length(stop_pos) > 0) {
                 stop_pos <- stop_pos + u
             } else {
@@ -288,7 +282,7 @@ get_orfs <- function(
 
 #' Extract output from multitaper analysis of a signal
 #'
-#' This function uses the multitaper tool to extract F-values and multitaper spectral coefficients
+#' This function uses the multitaper tool to extract FALSE-values and multitaper spectral coefficients
 #' @details Values reported correspond to the closest frequency to 1/3 (same parameters as in RiboTaper). \cr
 #' Padding to a minimum length of 1024 is performed to increase spectral resolution.
 #' @keywords ORFquant
@@ -297,7 +291,7 @@ get_orfs <- function(
 #' @param n_tapers n of tapers to use
 #' @param time_bw time_bw parameter
 #' @param slepians_values set of calculated slepian functions to use in the multitaper analysis
-#' @return two numeric values representing the F-value for the multitaper test and its corresponding spectral coefficient at the closest frequency to 1/3
+#' @return two numeric values representing the FALSE-value for the multitaper test and its corresponding spectral coefficient at the closest frequency to 1/3
 #' @seealso \code{\link{detect_translated_orfs}}, \code{\link{spec.mtm}}, \code{\link{dpss}}
 #' @export
 
@@ -324,8 +318,8 @@ take_Fvals_spect <- function(x, n_tapers, time_bw, slepians_values) {
         centreWithSlepians = TRUE,
         Ftest = TRUE,
         maxAdaptiveIterations = 100,
-        returnZeroFreq = F,
-        plot = F,
+        returnZeroFreq = FALSE,
+        plot = FALSE,
         dpssIN = slepians_values
     )
 
@@ -361,7 +355,7 @@ take_Fvals_spect <- function(x, n_tapers, time_bw, slepians_values) {
 #' @export
 
 select_start <- function(ORFs, P_sites_rle, cutoff = NA, cutoff_ave = .5) {
-    ORFs <- ORFs[order(end(ORFs), start(ORFs), decreasing = F)]
+    ORFs <- ORFs[order(end(ORFs), start(ORFs), decreasing = FALSE)]
     names(ORFs) <- NULL
     longest_ORF <- split(ORFs, end(ORFs))
     maxo <- which.max(width(longest_ORF))
@@ -369,9 +363,9 @@ select_start <- function(ORFs, P_sites_rle, cutoff = NA, cutoff_ave = .5) {
     P_sites_rle <- RleList(P_sites_rle)
     names(P_sites_rle) <- seqnames(ORFs[1])
     covss <- P_sites_rle[ORFs]
-    ok <- sapply(covss, function(x) {
+    ok <- vapply(covss, function(x) {
         sum(as.vector(x) > 0) > 2
-    })
+    }, logical(1L))
     if (length(ok) == 0) {
         return(GRanges())
     }
@@ -379,8 +373,8 @@ select_start <- function(ORFs, P_sites_rle, cutoff = NA, cutoff_ave = .5) {
     covss <- covss[ok]
     rrr <- lapply(covss, function(x) {
         fr <- suppressWarnings(matrix(as.vector(x), nrow = 3))
-        fr <- fr[, colSums(fr) > 0, drop = F]
-        if (dim(fr)[2] == 0) {
+        fr <- fr[, colSums(fr) > 0, drop = FALSE]
+        if (ncol(fr) == 0) {
             return(GRanges())
         }
         fra <- apply(fr, 2, function(y) {
@@ -417,7 +411,7 @@ select_start <- function(ORFs, P_sites_rle, cutoff = NA, cutoff_ave = .5) {
         }
         covo <- covss[names(covss) %in% as.character(x$endorf[1])]
         okorfa <- c()
-        for (cnt in 1:length(x)) {
+        for (cnt in seq_along(x)) {
             psit <- as.vector(covo[[cnt]])
 
             if (cnt < length(x)) {
@@ -428,8 +422,8 @@ select_start <- function(ORFs, P_sites_rle, cutoff = NA, cutoff_ave = .5) {
             }
 
             frames <- suppressWarnings(matrix(as.vector(psit), nrow = 3))
-            frames <- frames[, colSums(frames) > 0, drop = F]
-            if (dim(frames)[2] == 0) {
+            frames <- frames[, colSums(frames) > 0, drop = FALSE]
+            if (ncol(frames) == 0) {
                 next
             }
             frames <- apply(frames, 2, function(y) {
@@ -520,13 +514,13 @@ calc_orf_pval <- function(
 
     # Phase 2: Batch extract coverages for vectorized stats
     all_psit <- lapply(seq_len(n_orfs), function(i) {
-        as.vector(P_sites_rle[ORFs[i]@ranges])
+        as.vector(P_sites_rle[ranges(ORFs[i])])
     })
     all_psit_uniq <- lapply(seq_len(n_orfs), function(i) {
-        as.vector(P_sites_uniq_rle[ORFs[i]@ranges])
+        as.vector(P_sites_uniq_rle[ranges(ORFs[i])])
     })
     all_psit_uniq_mm <- lapply(seq_len(n_orfs), function(i) {
-        as.vector(P_sites_uniq_mm_rle[ORFs[i]@ranges])
+        as.vector(P_sites_uniq_mm_rle[ranges(ORFs[i])])
     })
 
     # Phase 2: Vectorized basic statistics
@@ -639,8 +633,8 @@ calc_orf_pval <- function(
 #' \code{ave_pct_fr_st}: average percentage of in-frame reads per each codon between the selected start codon and the next candidate one
 #' \code{pct_fr_st}: percentage of in-frame reads between the selected start codon and the next candidate one
 #' \code{longest_ORF}: GRanges coordinates for the longest ORF with the same stop codon
-#' \code{pval}: P-value for the multitaper F-test at 1/3 using the ORF P_sites profile
-#' \code{pval_uniq}: P-value for the multitaper F-test at 1/3 using the ORF P_sites profile (only uniquely mapping reads)
+#' \code{pval}: P-value for the multitaper FALSE-test at 1/3 using the ORF P_sites profile
+#' \code{pval_uniq}: P-value for the multitaper FALSE-test at 1/3 using the ORF P_sites profile (only uniquely mapping reads)
 #' \code{P_sites_raw}: Raw number of P_sites mapping to the ORF
 #' \code{P_sites_raw_unique}: Uniquely mapping P_sites mapping to the ORF
 #' \code{ORF_id_tr}: ORF id containing <tx_id>_<start>_<end>
@@ -663,12 +657,12 @@ detect_translated_orfs <- function(
     P_sites_uniq_mm,
     genomic_region,
     genetic_code,
-    all_starts = T,
-    nostarts = F,
+    all_starts = TRUE,
+    nostarts = FALSE,
     start_sel_cutoff = NA,
     start_sel_cutoff_ave = .5,
     cutoff_fr_ave = .5,
-    uniq_signal = F
+    uniq_signal = FALSE
 ) {
     orfs_gr <- GRangesList()
     orfs_gen_gr <- GRangesList()
@@ -731,7 +725,7 @@ detect_translated_orfs <- function(
             tx_name = tx,
             sequence = seq_tx,
             get_all_starts = all_starts,
-            Stop_Stop = F,
+            Stop_Stop = FALSE,
             genetic_code_table = genetic_code
         ))
         #no need to know frame for now
@@ -742,7 +736,7 @@ detect_translated_orfs <- function(
 
         orfs <- GRanges(
             seqnames = tx,
-            ranges = orfs@ranges,
+            ranges = ranges(orfs),
             strand = strand(orfs)
         )
         orfs <- select_start(
@@ -776,9 +770,9 @@ detect_translated_orfs <- function(
         }
         #orfs$gene_id<-mapIds(keys = tx,x = annot,column = "GENEID",keytype = "TXNAME")
         orfs$Protein <- AAStringSet(rep("NA", length(orfs)))
-        for (h in 1:length(orfs)) {
+        for (h in seq_along(orfs)) {
             orfs$Protein[h] <- AAStringSet(as.character(translate(
-                seq_tx[orfs@ranges[h]],
+                seq_tx[ranges(orfs)[h]],
                 genetic.code = genetic_code,
                 if.fuzzy.codon = "solve"
             )))
@@ -805,7 +799,7 @@ detect_translated_orfs <- function(
         ]))
 
         #must add the other compatible txs, to avoid calculating same stuff
-        for (w in 1:length(orfs)) {
+        for (w in seq_along(orfs)) {
             orf <- orfs[w]
             nam <- orf$ORF_id_tr
             orf$compatible_with <- NA
@@ -816,19 +810,20 @@ detect_translated_orfs <- function(
     if (length(orfs_gr) == 0) {
         return(list())
     }
-    tx_orfs <- unique(sapply(
+    tx_orfs <- unique(vapply(
         strsplit(names(orfs_gr), split = "_"),
         function(x) {
             len <- length(x)
-            x[-c(len - 1, len)]
-        }
+            paste(x[-c(len - 1, len)], collapse = "_")
+        },
+        character(1L)
     ))
     a <- lapply(selected_txs$txs, function(x) {
         x[x %in% tx_orfs]
     })
     selected_txs$txs_orfs <- CharacterList(a)
 
-    check <- sapply(selected_txs$txs_orfs, FUN = length)
+    check <- vapply(selected_txs$txs_orfs, FUN = length, integer(1L))
     use <- rep("shared", length(check))
     use[check == 1] <- "unique"
     use[check == 0] <- "absent"
@@ -851,9 +846,9 @@ detect_translated_orfs <- function(
             ))
         }
 
-        a <- sapply(over_tx$txs, function(x) {
+        a <- vapply(over_tx$txs, function(x) {
             length(x[x %in% as.character(seqnames(orf_tx))])
-        })
+        }, integer(1L))
         over_tx <- over_tx[a > 0]
 
         orfs_unq_gr[[j]] <- over_tx
@@ -871,18 +866,18 @@ detect_translated_orfs <- function(
             gen <- orfs_gen_gr[[i]]
 
             ident <- c()
-            for (j in 1:length(orfs_gen_gr)) {
+            for (j in seq_along(orfs_gen_gr)) {
                 ident[j] <- identical(gen, orfs_gen_gr[[j]])
             }
             ident_mat[which(names(orfs_gr) == i), ] <- ident
         }
         #diag(ident_mat)<-NA
-        ident_mat[lower.tri(ident_mat, diag = T)] <- NA
-        ide <- which(ident_mat, arr.ind = T)
+        ident_mat[lower.tri(ident_mat, diag = TRUE)] <- NA
+        ide <- which(ident_mat, arr.ind = TRUE)
         if (length(ide) > 0) {
             rems <- c()
             ide <- split(ide, ide[, 1])
-            for (i in 1:length(ide)) {
+            for (i in seq_along(ide)) {
                 iden <- ide[[i]]
                 iden <- iden[!iden == as.numeric(names(ide)[i])]
                 if (sum(iden %in% rems) > 0) {
@@ -931,11 +926,11 @@ from_tx_togen <- function(ORFs, exons, introns) {
     orfs_gen <- mapFromTranscripts(
         x = ORFs,
         transcripts = exons,
-        ignore.strand = F
+        ignore.strand = FALSE
     )
     strand(orfs_gen) <- strand(exons[[1]][1])
     list_ma <- GRangesList()
-    for (i in 1:length(ORFs)) {
+    for (i in seq_along(ORFs)) {
         or <- orfs_gen[i]
         or <- setdiff(or, introns)
         list_ma[[ORFs$ORF_id_tr[i]]] <- or
@@ -969,9 +964,9 @@ select_txs <- function(
     P_sites,
     P_sites_uniq,
     junction_counts,
-    uniq_signal = F
+    uniq_signal = FALSE
 ) {
-    stra <- as.character(region@strand)
+    stra <- as.character(strand(region))
     gene_feat <- junction_counts[junction_counts %over% region]
 
     nsns <- annotation$exons_bins
@@ -985,20 +980,20 @@ select_txs <- function(
 
     d <- genbin$reads
 
-    hts <- findOverlaps(genbin, P_sites, ignore.strand = F)
+    hts <- findOverlaps(genbin, P_sites, ignore.strand = FALSE)
     hts <- cbind(
         queryHits(hts),
         P_sites[subjectHits(hts)]$score * width(P_sites[subjectHits(hts)])
     )
     if (length(hts) > 0) {
         hts <- aggregate(x = hts[, 2], list(hts[, 1]), FUN = sum)
-        for (i in 1:dim(hts)[1]) {
+        for (i in seq_len(nrow(hts))) {
             d[hts[i, 1]] <- hts[i, 2]
         }
         genbin$reads <- d
     }
     d <- genbin$unique_reads
-    hts <- findOverlaps(genbin, P_sites_uniq, ignore.strand = F)
+    hts <- findOverlaps(genbin, P_sites_uniq, ignore.strand = FALSE)
     hts <- cbind(
         queryHits(hts),
         P_sites_uniq[subjectHits(hts)]$score *
@@ -1007,7 +1002,7 @@ select_txs <- function(
     #IMPORTANT, HERE THERE WAS A IF NO UNIQ RETURN GRANGESLIST()
     if (length(hts) > 0) {
         hts <- aggregate(x = hts[, 2], list(hts[, 1]), FUN = sum)
-        for (i in 1:dim(hts)[1]) {
+        for (i in seq_len(nrow(hts))) {
             d[hts[i, 1]] <- hts[i, 2]
         }
         genbin$unique_reads <- d
@@ -1060,10 +1055,10 @@ select_txs <- function(
 
     nest <- c()
     ident <- c()
-    for (i in 1:dim(mat)[2]) {
+    for (i in seq_len(ncol(mat))) {
         yes <- which(mat[, i] == 1)
         nesti <- c()
-        for (j in (1:dim(mat)[2])[-i]) {
+        for (j in (seq_len(ncol(mat)))[-i]) {
             yesj <- which(mat[, j] == 1)
             if (identical(yes, yesj)) {
                 ident <- c(
@@ -1084,7 +1079,7 @@ select_txs <- function(
         }
     }
     if (length(ident) > 0) {
-        nest <- nest[!nest %in% unique(sapply(strsplit(ident, ";"), "[[", 1))]
+        nest <- nest[!nest %in% unique(vapply(strsplit(ident, ";"), "[[", character(1L), 1))]
     }
     txs_sofar <- txs_sofar[!txs_sofar %in% nest]
 
@@ -1103,13 +1098,13 @@ select_txs <- function(
         }
 
         mat_orig <- mat
-        d_count <- paste(1:length(d), d, sep = "_")
+        d_count <- paste(seq_along(d), d, sep = "_")
         good <- d_count[which(d > 0)]
         bad <- d_count[which(d == 0)]
 
         txs_good <- c()
         expl_good <- c()
-        for (i in 1:dim(mat)[2]) {
+        for (i in seq_len(ncol(mat))) {
             expl_good_old <- expl_good
             #if new good feature
             tx <- d_count[which(mat[, i] > 0)]
@@ -1230,7 +1225,7 @@ select_txs <- function(
     gen_bins_junct$genes_selected <- CharacterList(b)
     gen_bins_junct$txs_selected <- CharacterList(a)
 
-    check <- sapply(gen_bins_junct$txs, FUN = length)
+    check <- vapply(gen_bins_junct$txs, FUN = length, integer(1L))
     use <- rep("shared", length(check))
     use[check == 1] <- "unique"
     use[check == 0] <- "absent"
@@ -1276,14 +1271,14 @@ get_reathr_seq <- function(tx_name, orf, sequence, genetic_code) {
 
     stops <- pept == "*"
 
-    start_pos <- ((1:length(pept))[starts]) * 3
+    start_pos <- ((seq_along(pept))[starts]) * 3
     if (length(start_pos) > 0) {
         start_pos <- start_pos + u - 2
     } else {
         start_pos <- NA
     }
 
-    stop_pos <- ((1:length(pept))[stops]) * 3 - 3
+    stop_pos <- ((seq_along(pept))[stops]) * 3 - 3
     if (length(stop_pos) > 0) {
         #here was -2 at the end, I'll -1, as the GRanges puts 1 more ???
         stop_pos <- stop_pos + u
@@ -1369,7 +1364,7 @@ detect_readthrough <- function(
     annotation,
     genetic_code_table,
     cutoff_fr_ave = .5,
-    uniq_signal = F
+    uniq_signal = FALSE
 ) {
     P_sites <- P_sites[
         !P_sites %over% unlist(results_orf$ORFs_genomic_position)
@@ -1382,7 +1377,7 @@ detect_readthrough <- function(
     ]
     readthroughs <- GRanges()
     if (length(P_sites) > 4) {
-        for (i in 1:length(results_orf$ORFs_tx_position)) {
+        for (i in seq_along(results_orf$ORFs_tx_position)) {
             orf_tx <- results_orf$ORFs_tx_position[[i]]
             tx <- orf_tx$transcript_id
             ex_tx <- annotation$exons_txs[[tx]]
@@ -1486,7 +1481,7 @@ detect_readthrough <- function(
                 }
             }
             vals1$Protein <- AAStringSet(as.character(translate(
-                seq_tx[vals1@ranges],
+                seq_tx[ranges(vals1)],
                 genetic.code = genetic_code_table,
                 if.fuzzy.codon = "solve"
             )))
@@ -1543,7 +1538,7 @@ detect_readthrough <- function(
                                 cutoff = cutoff_fr_ave
                             )
                             vals1$Protein <- AAStringSet(as.character(translate(
-                                seq_tx[vals1@ranges],
+                                seq_tx[ranges(vals1)],
                                 genetic.code = genetic_code_table,
                                 if.fuzzy.codon = "solve"
                             )))
@@ -1584,7 +1579,7 @@ detect_readthrough <- function(
                                 cutoff = cutoff_fr_ave
                             )
                             vals1$Protein <- AAStringSet(as.character(translate(
-                                seq_tx[vals1@ranges],
+                                seq_tx[ranges(vals1)],
                                 genetic.code = genetic_code_table,
                                 if.fuzzy.codon = "solve"
                             )))
@@ -1613,7 +1608,7 @@ detect_readthrough <- function(
             mcs$ORF_id_tr <- NULL
             dups <- duplicated(mcs)
             readthroughs <- readthroughs[!dups]
-            for (j in 1:length(readthroughs)) {
+            for (j in seq_along(readthroughs)) {
                 orig_orf <- readthroughs$ORF_orig_tr[j]
                 mcs_orig <- mcols(results_orf$ORFs_tx_position[[which(
                     names(results_orf$ORFs_tx_position) == orig_orf
@@ -1714,22 +1709,22 @@ select_quantify_ORFs <- function(
     cutoff_P_sites = NA,
     optimiz = FALSE,
     scaling = TRUE,
-    uniq_signal = F
+    uniq_signal = FALSE
 ) {
     select_feat <- results_ORFs[["ORFs_features"]]
 
     select_feat <- endoapply(select_feat, function(x) {
-        unqid <- paste(x@ranges, x$type, names(x), sep = "_")
+        unqid <- paste(ranges(x), x$type, names(x), sep = "_")
         x <- x[!duplicated(unqid)]
         x
     })
 
     select_feats <- unlist(select_feat)
 
-    nmss <- c()
-    for (nm in names(results_ORFs[["ORFs_features"]])) {
-        nmss <- c(nmss, rep(nm, length(select_feat[[nm]])))
-    }
+    nmss <- rep(
+        names(results_ORFs[["ORFs_features"]]),
+        times = lengths(select_feat)
+    )
     names(select_feats) <- nmss
     select_feats_jun <- select_feats[select_feats$type == "J"]
 
@@ -1737,12 +1732,11 @@ select_quantify_ORFs <- function(
     # allofthem<-unique(unlist(select_feats_jun$txs_orfs))
     # for(i in)
     if (length(select_feats_jun) > 0) {
-        ran_j <- select_feats_jun@ranges
+        ran_j <- ranges(select_feats_jun)
         #startend!
         df <- data.frame(
-            stend = paste(ran_j@start, end(ran_j), sep = "_"),
-            orfs = names(ran_j),
-            stringsAsFactors = F
+            stend = paste(start(ran_j), end(ran_j), sep = "_"),
+            orfs = names(ran_j)
         )
         tab_j <- as.matrix(table(df$stend, df$orfs))
 
@@ -1760,7 +1754,7 @@ select_quantify_ORFs <- function(
         #names(orfs_print2)<-NULL
     }
     orfs <- results_ORFs[["ORFs_genomic_position"]]
-    stra <- as.character(select_feats[1]@strand)
+    stra <- as.character(strand(select_feats[1]))
 
     df_orfs_ex <- data.frame(orfs)
     names(df_orfs_ex) <- c(
@@ -1784,8 +1778,7 @@ select_quantify_ORFs <- function(
         tx_chrom = as.character(unique(seqnames(orfs[[1]]))),
         tx_start = min(start(orfs)),
         tx_end = max(end(orfs)),
-        tx_strand = as.character(unique(strand(orfs[[1]]))),
-        stringsAsFactors = F
+        tx_strand = as.character(unique(strand(orfs[[1]])))
     )
     df_genes <- data.frame(tx_name = as.character(names(orfs)), gene_id = "OFF")
     orfann <- suppressWarnings(makeTxDb(
@@ -1799,7 +1792,7 @@ select_quantify_ORFs <- function(
 
     d <- rep(0, length(exbin))
 
-    hts <- findOverlaps(exbin, P_sites, ignore.strand = F)
+    hts <- findOverlaps(exbin, P_sites, ignore.strand = FALSE)
     hts <- cbind(
         queryHits(hts),
         P_sites[subjectHits(hts)]$score * width(P_sites[subjectHits(hts)])
@@ -1808,13 +1801,13 @@ select_quantify_ORFs <- function(
         return(GRangesList())
     }
     hts <- aggregate(x = hts[, 2], list(hts[, 1]), FUN = sum)
-    for (i in 1:dim(hts)[1]) {
+    for (i in seq_len(nrow(hts))) {
         d[hts[i, 1]] <- hts[i, 2]
     }
 
     d2 <- rep(0, length(exbin))
 
-    hts <- findOverlaps(exbin, P_sites_uniq, ignore.strand = F)
+    hts <- findOverlaps(exbin, P_sites_uniq, ignore.strand = FALSE)
     hts <- cbind(
         queryHits(hts),
         P_sites_uniq[subjectHits(hts)]$score *
@@ -1822,7 +1815,7 @@ select_quantify_ORFs <- function(
     )
     if (length(hts) > 0) {
         hts <- aggregate(x = hts[, 2], list(hts[, 1]), FUN = sum)
-        for (i in 1:dim(hts)[1]) {
+        for (i in seq_len(nrow(hts))) {
             d2[hts[i, 1]] <- hts[i, 2]
         }
     }
@@ -1900,7 +1893,7 @@ select_quantify_ORFs <- function(
 
     mat <- matrix(data = 0, nrow = length(d), ncol = length(txs_sofar))
     colnames(mat) <- txs_sofar
-    for (i in 1:length(txs_sofar)) {
+    for (i in seq_along(txs_sofar)) {
         mat[, i] <- sapply(a, function(x) {
             sum(x == txs_sofar[i])
         })
@@ -1909,10 +1902,10 @@ select_quantify_ORFs <- function(
     #TAKE AWAY NESTED TXS
     nest <- c()
     ident <- c()
-    for (i in 1:dim(mat)[2]) {
+    for (i in seq_len(ncol(mat))) {
         yes <- which(mat[, i] == 1)
         nesti <- c()
-        for (j in (1:dim(mat)[2])[-i]) {
+        for (j in (seq_len(ncol(mat)))[-i]) {
             yesj <- which(mat[, j] == 1)
             if (identical(yes, yesj)) {
                 ident <- c(
@@ -1933,7 +1926,7 @@ select_quantify_ORFs <- function(
         }
     }
     if (length(ident) > 0) {
-        nest <- nest[!nest %in% unique(sapply(strsplit(ident, ";"), "[[", 1))]
+        nest <- nest[!nest %in% unique(vapply(strsplit(ident, ";"), "[[", character(1L), 1))]
     }
     txs_sofar <- txs_sofar[!txs_sofar %in% nest]
     change <- 1
@@ -1941,20 +1934,20 @@ select_quantify_ORFs <- function(
     while (change > 0) {
         mat <- matrix(data = 0, nrow = length(d), ncol = length(txs_sofar))
         colnames(mat) <- txs_sofar
-        for (i in 1:length(txs_sofar)) {
+        for (i in seq_along(txs_sofar)) {
             mat[, i] <- sapply(a, function(x) {
                 sum(x == txs_sofar[i])
             })
         }
 
         mat_orig <- mat
-        d_count <- paste(1:length(d), d, sep = "_")
+        d_count <- paste(seq_along(d), d, sep = "_")
         good <- d_count[which(d > 0)]
         bad <- d_count[which(d == 0)]
 
         txs_good <- c()
         expl_good <- c()
-        for (i in 1:dim(mat)[2]) {
+        for (i in seq_len(ncol(mat))) {
             expl_good_old <- expl_good
             #if new good feature
             tx <- d_count[which(mat[, i] > 0)]
@@ -2065,14 +2058,14 @@ select_quantify_ORFs <- function(
     })
     gene_feat$ORF_id_tr_selected <- CharacterList(a)
 
-    check <- sapply(gene_feat$ORF_id_tr, FUN = length)
+    check <- vapply(gene_feat$ORF_id_tr, FUN = length, integer(1L))
     use <- rep("shared", length(check))
     use[check == 1] <- "unique"
     use[check == 0] <- "absent"
     use[check > 1] <- "shared"
     gene_feat$use_ORF <- use
 
-    check <- sapply(gene_feat$ORF_id_tr_selected, FUN = length)
+    check <- vapply(gene_feat$ORF_id_tr_selected, FUN = length, integer(1L))
     use <- rep("shared", length(check))
     use[check == 1] <- "unique"
     use[check == 0] <- "absent"
@@ -2089,9 +2082,9 @@ select_quantify_ORFs <- function(
         if (length(featjuns) > 0) {
             ok <- sort(c(ok, featjuns[which(featjuns %in% gaps(orfs[[i]]))]))
         }
-        a <- sapply(ok$ORF_id_tr, function(x) {
+        a <- vapply(ok$ORF_id_tr, function(x) {
             length(x[x %in% i])
-        })
+        }, integer(1L))
         ok <- ok[a > 0]
         sel_feats[[i]] <- unique(ok)
     }
@@ -2125,7 +2118,7 @@ select_quantify_ORFs <- function(
 
     while (length(orf_del) > 0) {
         feats <- feats[!names(feats) %in% orf_del]
-        nms <- sapply(feats, length)
+        nms <- vapply(feats, length, integer(1L))
         nms <- rep(names(nms), nms)
         feats <- unlist(GRangesList(unlist(feats)))
         names(feats) <- nms
@@ -2143,8 +2136,8 @@ select_quantify_ORFs <- function(
                 unique(x[!x %in% orf_del])
             }
         ))
-        lens <- sapply(feats$ORF_id_tr_selected, length)
-        lens2 <- sapply(gene_feat$ORF_id_tr_selected_quant, length)
+        lens <- vapply(feats$ORF_id_tr_selected, length, integer(1L))
+        lens2 <- vapply(gene_feat$ORF_id_tr_selected_quant, length, integer(1L))
         gene_feat$use_ORF_selected_quant <- "shared"
         gene_feat$use_ORF_selected_quant[lens2 == 1] <- "unique"
         gene_feat$use_ORF_selected_quant[lens2 == 0] <- "absent"
@@ -2209,7 +2202,7 @@ select_quantify_ORFs <- function(
                     cov_feat[js] <- riz[js] / 60
                 }
                 cov_adj <- cov_feat
-                for (j in 1:length(feat)) {
+                for (j in seq_along(feat)) {
                     fea <- feat[j]
                     txs_fea <- unlist(fea$ORF_id_tr_selected)
                     nass <- txs_fea %in% unqs_na
@@ -2253,7 +2246,7 @@ select_quantify_ORFs <- function(
                     cov_feat[js] <- riz[js] / 60
                 }
                 cov_adj <- cov_feat
-                for (j in 1:length(feat)) {
+                for (j in seq_along(feat)) {
                     fea <- feat[j]
                     txs_fea <- unlist(fea$ORF_id_tr_selected)
                     nass <- txs_fea %in% unqs_zero
@@ -2303,7 +2296,7 @@ select_quantify_ORFs <- function(
                         }
                         adj_use <- feat$use_ORF_selected
                         adj_cov_feat <- cov_feat
-                        for (j in 1:length(feat)) {
+                        for (j in seq_along(feat)) {
                             txs_fea <- feat$ORF_id_tr_selected[[j]]
                             unqs_okk_noi_feat <- unqs_okk_noi[
                                 names(unqs_okk_noi) %in% txs_fea
@@ -2380,7 +2373,7 @@ select_quantify_ORFs <- function(
                         cov_feat[js] <- riz[js] / 60
                     }
                     cov_adj <- cov_feat
-                    for (j in 1:length(feat)) {
+                    for (j in seq_along(feat)) {
                         fea <- feat[j]
                         txs_fea <- unlist(fea$ORF_id_tr_selected)
                         nass <- txs_fea %in% unqs_na
@@ -2593,7 +2586,7 @@ select_quantify_ORFs <- function(
                 x$ORF_pct_P_sites_pN <- 0
             }
 
-            c(x[order(x$ORF_pct_P_sites, decreasing = T)], xnot)
+            c(x[order(x$ORF_pct_P_sites, decreasing = TRUE)], xnot)
         }))
 
         orf_del_cums <- c()
@@ -2652,7 +2645,7 @@ select_quantify_ORFs <- function(
                 unique(x[!x %in% orf_del])
             }
         ))
-        lens2 <- sapply(gene_feat$ORF_id_tr_selected_quant, length)
+        lens2 <- vapply(gene_feat$ORF_id_tr_selected_quant, length, integer(1L))
         gene_feat$use_ORF_selected_quant <- "shared"
         gene_feat$use_ORF_selected_quant[lens2 == 1] <- "unique"
         gene_feat$use_ORF_selected_quant[lens2 == 0] <- "absent"
@@ -2713,7 +2706,7 @@ annotate_splicing <- function(orf_gen, ref_cds) {
         spl_ran <- c(spl_ran, ref_cds[!refover])
         grliss <- GRangesList()
         refgrl <- ref_cds[!refover]
-        for (gri in 1:length(refgrl)) {
+        for (gri in seq_along(refgrl)) {
             grliss[[gri]] <- refgrl[gri]
         }
         spl_ran$ref <- grliss
@@ -2725,10 +2718,10 @@ annotate_splicing <- function(orf_gen, ref_cds) {
 
     orf_gen <- sort(orf_gen)
     if (length(orf_gen) > 0) {
-        for (f in 1:length(orf_gen)) {
+        for (f in seq_along(orf_gen)) {
             ran <- orf_gen[f]
             last_ex <- length(orf_gen)
-            if (overref[f] == T) {
+            if (overref[f] == TRUE) {
                 ref_over <- ref_cds[ref_cds %over% ran]
                 #annotate for 5' and 3'; porcoddio
 
@@ -3225,7 +3218,7 @@ annotate_splicing <- function(orf_gen, ref_cds) {
                     }
                 }
             }
-            if (overref[f] == F) {
+            if (overref[f] == FALSE) {
                 if (length(ref_cds) > 0) {
                     ran$ref <- GRangesList(ref_cds[nearest(
                         x = ran,
@@ -3425,7 +3418,7 @@ annotate_ORFs <- function(
             moret <- sapply(annotated_cds_tx, FUN = function(x) {
                 sum(width(setdiff(orf_gen, x)))
             })
-            moret <- t(data.frame(moret, stringsAsFactors = F))
+            moret <- t(data.frame(moret))
             max_cds[i] <- colnames(moret)[which.min(colSums(moret))]
         }
     }
@@ -3454,7 +3447,7 @@ annotate_ORFs <- function(
         comp_txs <- ORFs_tx[[i]]$compatible_with[compats]
         if (length(comp_txs) > 0) {
             compid <- sapply(comp_txs, function(x) {
-                txs <- sapply(strsplit(x, split = "_"), "[[", 1)
+                txs <- vapply(strsplit(x, split = "_"), "[[", character(1L), 1)
                 btps <- Annotation$trann$transcript_biotype[match(
                     txs,
                     Annotation$trann$transcript_id
@@ -3564,9 +3557,9 @@ annotate_ORFs <- function(
         unlist(GRangesList(ORFs_tx))$transcript_id
     )]
 
-    strands_exs <- sapply(strand(exs), function(x) {
-        x@values[1]
-    })
+    strands_exs <- vapply(strand(exs), function(x) {
+        as.character(runValue(x)[1])
+    }, character(1L))
     exs_pos <- exs[strands_exs == "+"]
     exs_neg <- exs[strands_exs == "-"]
 
@@ -3602,7 +3595,7 @@ annotate_ORFs <- function(
         x
     })
 
-    for (i in 1:length(ORFs_tx)) {
+    for (i in seq_along(ORFs_tx)) {
         nmd <- FALSE
         if (Distance_EJCs[i] > 0) {
             nmd <- TRUE
@@ -3615,7 +3608,7 @@ annotate_ORFs <- function(
 
     #here bulk of work
 
-    for (i in 1:length(ORFs_tx)) {
+    for (i in seq_along(ORFs_tx)) {
         orf_tx <- ORFs_tx[[i]]
         ORFs_splice_feats[[orf_tx$ORF_id_tr]] <- GRanges()
         ORFs_splice_feats_tomaxORF[[orf_tx$ORF_id_tr]] <- GRanges()
@@ -3748,7 +3741,7 @@ annotate_ORFs <- function(
                 orf_gen %over% x
             })
             if (length(orf_gen) == 1) {
-                moreg <- t(data.frame(moreg, stringsAsFactors = F))
+                moreg <- t(data.frame(moreg))
             }
             annotated_cds2 <- reduce(unlist(annotated_cds[[colnames(
                 moreg
@@ -3772,7 +3765,7 @@ annotate_ORFs <- function(
                 nearest_cds <- annotated_cds[[names(unlist(
                     annotated_cds
                 ))[nearest(orf_gen, unlist(annotated_cds))[1]]]]
-                overl_whole <- orf_gen@ranges %over%
+                overl_whole <- ranges(orf_gen) %over%
                     IRanges(
                         start = min(start(nearest_cds)),
                         end = max(end(nearest_cds))
@@ -3997,15 +3990,15 @@ ORFquant <- function(
     region,
     for_ORFquant,
     genetic_code_region,
-    orf_find.all_starts = T,
-    orf_find.nostarts = F,
+    orf_find.all_starts = TRUE,
+    orf_find.nostarts = FALSE,
     orf_find.start_sel_cutoff = NA,
     orf_find.start_sel_cutoff_ave = .5,
     orf_find.cutoff_fr_ave = .5,
     orf_quant.cutoff_cums = NA,
     orf_quant.cutoff_pct = 2,
     orf_quant.cutoff_P_sites = NA,
-    unique_reads = F
+    unique_reads = FALSE
 ) {
     P_sites_region <- for_ORFquant$P_sites_all[
         for_ORFquant$P_sites_all %over% region
@@ -4134,20 +4127,20 @@ run_ORFquant <- function(
     gene_name = NA,
     gene_id = NA,
     genomic_region = NA,
-    write_temp_files = T,
-    write_GTF_file = T,
-    write_protein_fasta = T,
-    interactive = T,
-    stn.orf_find.all_starts = T,
-    stn.orf_find.nostarts = F,
+    write_temp_files = TRUE,
+    write_GTF_file = TRUE,
+    write_protein_fasta = TRUE,
+    interactive = TRUE,
+    stn.orf_find.all_starts = TRUE,
+    stn.orf_find.nostarts = FALSE,
     stn.orf_find.start_sel_cutoff = NA,
     stn.orf_find.start_sel_cutoff_ave = .5,
     stn.orf_find.cutoff_fr_ave = .5,
     stn.orf_quant.cutoff_cums = NA,
     stn.orf_quant.cutoff_pct = 2,
     stn.orf_quant.cutoff_P_sites = NA,
-    unique_reads_only = F,
-    canonical_start_only = T
+    unique_reads_only = FALSE,
+    canonical_start_only = TRUE
 ) {
     # Parallel processing configuration
     # Use parallel::mclapply for Unix (fork-based, inherits parent environment)
@@ -4253,8 +4246,10 @@ run_ORFquant <- function(
                     }
                     nomatchinds <- setdiff(seq_along(grs[[i]]), matchinds)
                     for (addcol in addcols[1]) {
-                        mcols(scores)[[addcol]][!is.na(matchinds)] %<>%
-                            add(mcols(grs[[i]])[[addcol]][na.omit(matchinds)])
+                        mcols(scores)[[addcol]][!is.na(matchinds)] <- add(
+                            mcols(scores)[[addcol]][!is.na(matchinds)],
+                            mcols(grs[[i]])[[addcol]][na.omit(matchinds)]
+                        )
                     }
                     scores <- c(scores, grs[[i]][nomatchinds, ])
                 }
@@ -4578,7 +4573,7 @@ run_ORFquant <- function(
     if (length(ORFs_readthroughs) > 0) {
         ORFs_readthroughs <- ORFs_readthroughs[order(
             ORFs_readthroughs$P_sites_raw,
-            decreasing = T
+            decreasing = TRUE
         )]
     }
     ORFquant_results <- list(
@@ -4789,7 +4784,7 @@ load_annotation <- function(path) {
     if (is(GTF_annotation$genome, 'FaFile')) {
         genome_sequence <- GTF_annotation$genome
     } else {
-        library(GTF_annotation$genome_package, character.only = T)
+        library(GTF_annotation$genome_package, character.only = TRUE)
         genome_sequence <- get(GTF_annotation$genome_package)
     }
     GTF_annotation <<- GTF_annotation
@@ -4882,7 +4877,7 @@ prepare_annotation_files <- function(
         circss <- seqnames(seqinfotwob)[which(
             seqnames(seqinfotwob) %in% circ_chroms
         )]
-        seqinfotwob@is_circular[which(
+        isCircular(seqinfotwob)[which(
             seqnames(seqinfotwob) %in% circ_chroms
         )] <- TRUE
 
@@ -5028,7 +5023,7 @@ prepare_annotation_files <- function(
             genome_seq <- FaFile_Circ(genome_seq, circularRanges = circ_chroms)
         }
         seqinfo_genome <- seqinfo(genome_seq)
-        seqinfo_genome@is_circular[which(
+        isCircular(seqinfo_genome)[which(
             seqnames(seqinfo_genome) %in% circ_chroms
         )] <- TRUE
     }
@@ -5185,7 +5180,7 @@ prepare_annotation_files <- function(
             )
         )))
         trann <- trann[!is.na(trann$transcript_id), ]
-        trann <- data.frame(unique(trann), stringsAsFactors = FALSE)
+        trann <- data.frame(unique(trann))
 
         if (
             sum(!is.na(trann$transcript_biotype)) == 0 &
@@ -5290,7 +5285,7 @@ prepare_annotation_files <- function(
             rownames(translations) %in% c("dmel_mitochondrion_genome")
         ] <- "5"
 
-        circs <- ifs@seqnames[which(ifs@is_circular)]
+        circs <- seqnames(ifs)[which(isCircular(ifs))]
 
         #define start and stop codons (genome space)
 
@@ -5307,7 +5302,7 @@ prepare_annotation_files <- function(
         }
         tocheck <- as.character(runValue(seqnames(cds_tx)))
         tocheck <- cds_tx[!tocheck %in% circs]
-        width(tocheck) %>% sum %>% .[. < 3]
+        width(tocheck) |> sum() |> (\(x) x[x < 3])()
         seqcds <- extractTranscriptSeqs(genome, transcripts = tocheck)
         cd <- unique(translations$genetic_code[
             !rownames(translations) %in% circs
@@ -5729,7 +5724,7 @@ prepare_annotation_files <- function(
 get_ps_fromspliceplus <- function(x, cutoff) {
     rang <- cigarRangesAlongReferenceSpace(cigar(x), pos = start(x), ops = "M")
     cs <- lapply(rang, function(x) {
-        cumsum(x@width)
+        cumsum(width(x))
     })
     rangok <- lapply(which(IntegerList(cs) > cutoff), "[[", 1)
     rangok <- unlist(rangok)
@@ -5751,14 +5746,14 @@ get_ps_fromspliceplus <- function(x, cutoff) {
         rangmore <- rang[mores]
         rangok <- rangok[mores]
         cms <- cumsum(width(rangmore))
-        shft <- c()
-        for (i in 1:length(rangok)) {
-            shft <- c(shft, cutoff - cms[[i]][rangok[i] - 1])
+        shft <- numeric(length(rangok))
+        for (i in seq_along(rangok)) {
+            shft[i] <- cutoff - cms[[i]][rangok[i] - 1]
         }
         stt <- start(rangmore)
-        stok <- c()
-        for (i in 1:length(shft)) {
-            stok <- c(stok, stt[[i]][rangok[i]] + shft[i])
+        stok <- numeric(length(shft))
+        for (i in seq_along(shft)) {
+            stok[i] <- stt[[i]][rangok[i]] + shft[i]
         }
         psmores <- GRanges(
             IRanges(start = stok, width = 1),
@@ -5786,7 +5781,7 @@ get_ps_fromsplicemin <- function(x, cutoff) {
     rang <- cigarRangesAlongReferenceSpace(cigar(x), pos = start(x), ops = "M")
     rang <- endoapply(rang, rev)
     cs <- lapply(rang, function(x) {
-        cumsum(x@width)
+        cumsum(width(x))
     })
     rangok <- lapply(which(IntegerList(cs) > cutoff), "[[", 1)
     rangok <- unlist(rangok)
@@ -5808,15 +5803,15 @@ get_ps_fromsplicemin <- function(x, cutoff) {
         rangmore <- rang[mores]
         rangok <- rangok[mores]
         cms <- cumsum(width(rangmore))
-        shft <- c()
-        for (i in 1:length(rangok)) {
-            shft <- c(shft, cutoff - cms[[i]][rangok[i] - 1])
+        shft <- numeric(length(rangok))
+        for (i in seq_along(rangok)) {
+            shft[i] <- cutoff - cms[[i]][rangok[i] - 1]
         }
         #start?
         stt <- end(rangmore)
-        stok <- c()
-        for (i in 1:length(shft)) {
-            stok <- c(stok, stt[[i]][rangok[i]] - shft[i])
+        stok <- numeric(length(shft))
+        for (i in seq_along(shft)) {
+            stok[i] <- stt[[i]][rangok[i]] - shft[i]
         }
         psmores <- GRanges(
             IRanges(start = stok, width = 1),
@@ -5840,7 +5835,7 @@ get_ps_fromsplicemin <- function(x, cutoff) {
                 width = 1,
                 fix = "start"
             ),
-            shift = -(cutoff - sum(rang[1:(rangok - 1)]@width))
+            shift = -(cutoff - sum(width(rang[1:(rangok - 1)])))
         )
     }
     return(ps)
@@ -5914,12 +5909,12 @@ prepare_for_ORFquant <- function(
     if (!is.na(path_to_rl_cutoff_file)) {
         rl_cutoff <- read.table(
             path_to_rl_cutoff_file,
-            header = T,
+            header = TRUE,
             sep = "\t",
-            stringsAsFactors = F
+            stringsAsFactors = FALSE
         )
         rl_cutoff <- rl_cutoff[, c('read_length', 'cutoff', 'comp')]
-        if (dim(rl_cutoff)[2] != 3) {
+        if (ncol(rl_cutoff) != 3) {
             stop(
                 paste(
                     "Error: please format the rl_cutoff file correctly, using 3 tab-separated columns with 'read_length', 'cutoff' and 'compartment' as column names! ",
@@ -5952,7 +5947,7 @@ prepare_for_ORFquant <- function(
         GTF_annotation$seqinfo
     ))]
     seqs <- seqinfo(opts)
-    circs <- seqs@seqnames[which(seqs@seqnames %in% circs_seq)]
+    circs <- seqnames(seqs)[which(seqnames(seqs) %in% circs_seq)]
 
     param <- ScanBamParam(
         flag = scanBamFlag(isDuplicate = FALSE, isSecondaryAlignment = FALSE),
@@ -6227,11 +6222,11 @@ prepare_for_ORFquant <- function(
         x_I <- x[grep("I", cigar(x))]
 
         if (length(x_I) > 0) {
-            x <- x[grep("I", cigar(x), invert = T)]
+            x <- x[grep("I", cigar(x), invert = TRUE)]
         }
         x_D <- x[grep("D", cigar(x))]
         if (length(x_D) > 0) {
-            x <- x[grep("D", cigar(x), invert = T)]
+            x <- x[grep("D", cigar(x), invert = TRUE)]
         }
 
         # softclipping
@@ -6367,7 +6362,7 @@ prepare_for_ORFquant <- function(
                         unspl <- ok_reads[grep(
                             pattern = "N",
                             x = cigar(ok_reads),
-                            invert = T
+                            invert = TRUE
                         )]
 
                         ps_unspl <- shift(
@@ -6453,7 +6448,7 @@ prepare_for_ORFquant <- function(
                         unspl <- ok_reads[grep(
                             pattern = "N",
                             x = cigar(ok_reads),
-                            invert = T
+                            invert = TRUE
                         )]
 
                         ps_unspl <- shift(
@@ -6911,7 +6906,7 @@ plot_ORFquant_results <- function(
     cat_gen[grep(
         cat_gen,
         pattern = "non-overlapping\nCDS regions",
-        invert = T
+        invert = TRUE
     )] <- "overlapping\nCDS regions"
     levvs <- c(
         "ORF_annotated",
@@ -6978,8 +6973,8 @@ plot_ORFquant_results <- function(
 
     a <- ggplot(df, aes(x = cat_biot, y = value, fill = cat_biot))
     a <- a + geom_bar(stat = "identity", position = "dodge", colour = "black")
-    a <- a + facet_grid(. ~ cat_tx, drop = T, scales = "free_x")
-    a <- a + ylim(0, max(df$value, na.rm = T) * 1.1)
+    a <- a + facet_grid(. ~ cat_tx, drop = TRUE, scales = "free_x")
+    a <- a + ylim(0, max(df$value, na.rm = TRUE) * 1.1)
     a <- a +
         geom_text(
             aes(
@@ -7026,7 +7021,7 @@ plot_ORFquant_results <- function(
     b <- b + theme_bw()
     b <- b + ylab("ORF_pct_P-sites")
     b <- b + xlab("")
-    b <- b + facet_grid(. ~ cat_tx, drop = T, scales = "free_x")
+    b <- b + facet_grid(. ~ cat_tx, drop = TRUE, scales = "free_x")
     #b<-b + theme(legend.position="none")
     b <- b + scale_fill_manual(values = colli, "biotype")
     b <- b +
@@ -7062,7 +7057,7 @@ plot_ORFquant_results <- function(
             labels = c(1, 11, 101, 1001) - 1
         )
     #c<-c + geom_text(aes(x=cat_tx, y=ORFs_tx.ORFs_pM, hjust="top",label=ORFs_tx.ORFs_pM),colour="black",position = position_dodge(width = 1),size=5)
-    c <- c + facet_grid(. ~ cat_tx, drop = T, scales = "free_x")
+    c <- c + facet_grid(. ~ cat_tx, drop = TRUE, scales = "free_x")
     c <- c + theme_bw()
     c <- c + xlab("")
     c <- c + ylab("P-sites_pNpM")
@@ -7113,7 +7108,7 @@ plot_ORFquant_results <- function(
         )
     #c<-c + geom_text(aes(x=cat_tx, y=ORFs_tx.ORFs_pM, hjust="top",label=ORFs_tx.ORFs_pM),colour="black",position = position_dodge(width = 1),size=5)
     d <- d + theme_bw()
-    d <- d + facet_grid(. ~ cat_tx, drop = T, scales = "free_x")
+    d <- d + facet_grid(. ~ cat_tx, drop = TRUE, scales = "free_x")
     d <- d + xlab("")
     d <- d + ylab("ORF length (nt)")
     d <- d +
@@ -7191,8 +7186,8 @@ plot_ORFquant_results <- function(
     maxiso <- cut(
         mult_max_ORF$ORF_pct_P_sites,
         breaks = seq(0, 100, by = 10),
-        include.lowest = T,
-        right = T
+        include.lowest = TRUE,
+        right = TRUE
     )
     maxiso[is.na(maxiso)] <- "(90,100]"
     maxiso <- gsub(maxiso, pattern = ",", replacement = "-")
@@ -7248,7 +7243,7 @@ plot_ORFquant_results <- function(
     df <- data.frame(tbid, tb_bio, tpms)
     df$tb_bio <- factor(
         df$tb_bio,
-        levels = names(sort(table(df$tb_bio), decreasing = T))
+        levels = names(sort(table(df$tb_bio), decreasing = TRUE))
     )
     df$Freq <- factor(df$Freq, levels = c("1", "2", "3", ">3"))
     #df<-df[df$Freq!="1",]
@@ -7371,7 +7366,7 @@ plot_ORFquant_results <- function(
     qnt <- cut(
         nsels,
         breaks = c(0, 3, 6, 9, max(c(12, nsels))),
-        include.lowest = T
+        include.lowest = TRUE
     )
     qnt <- gsub(qnt, pattern = ",", replacement = "-")
     qnt <- gsub(qnt, pattern = "\\[", replacement = "")
@@ -7381,7 +7376,7 @@ plot_ORFquant_results <- function(
     qnt[qnt == "3-6"] <- "4-6"
     qnt[qnt == "6-9"] <- "7-9"
     qnt[qnt == "9-49"] <- "10-49"
-    qnt <- factor(qnt, levels = names(sort(table(qnt), decreasing = T)))
+    qnt <- factor(qnt, levels = names(sort(table(qnt), decreasing = TRUE)))
     df <- melt(table(qnt))
 
     a <- ggplot(df, aes(x = qnt, y = value, fill = "dark grey"))
@@ -7482,12 +7477,12 @@ plot_ORFquant_results <- function(
         unlist(reduce(GTF_annotation$exons_txs[GTF_annotation$trann$transcript_id[
             GTF_annotation$trann$gene_id %in% gens_sel
         ]])),
-        with.revmap = T
+        with.revmap = TRUE
     )
     b$ps <- assay(summarizeOverlaps(
         b,
         reads = for_ORFquant$P_sites_all,
-        ignore.strand = F,
+        ignore.strand = FALSE,
         mode = "Union",
         inter.feature = FALSE
     ))
@@ -7633,7 +7628,7 @@ plot_ORFquant_results <- function(
             coverage_minus,
             norm_x = NA,
             norm_y = NA,
-            nozero = F
+            nozero = FALSE
         ) {
             pl <- range[strand(range) == "+"]
             min <- range[strand(range) == "-"]
@@ -7658,7 +7653,7 @@ plot_ORFquant_results <- function(
                 mat_min <- mat_min / (colSums(mat_min) / norm_y)
             }
 
-            mat <- rbind(mat_pl, mat_min[, dim(mat_min)[2]:1])
+            mat <- rbind(mat_pl, mat_min[, ncol(mat_min):1])
             rownames(mat) <- c(names(pl), names(min))
             mat <- mat[match(names(range), rownames(mat)), ]
             mat
@@ -7716,7 +7711,7 @@ plot_ORFquant_results <- function(
             "same_3ss",
             "CDS_spanning"
         )
-        types_alt <- types[grep(types, pattern = "same", invert = T)]
+        types_alt <- types[grep(types, pattern = "same", invert = TRUE)]
         orfs_alt <- ORFs_spl_feat_maxORF[sapply(
             strsplit(ORFs_spl_feat_maxORF$spl_type, ";"),
             function(x) {
@@ -7738,9 +7733,9 @@ plot_ORFquant_results <- function(
                 set.seed(666)
                 if (length(region) > 1000) {
                     region <- region[sample(
-                        x = 1:length(region),
+                        x = seq_along(region),
                         size = 1000,
-                        replace = F
+                        replace = FALSE
                     )]
                 }
                 region$dist <- end(region$ref) - end(region)
@@ -7783,9 +7778,9 @@ plot_ORFquant_results <- function(
                 set.seed(666)
                 if (length(region) > 1000) {
                     region <- region[sample(
-                        x = 1:length(region),
+                        x = seq_along(region),
                         size = 1000,
-                        replace = F
+                        replace = FALSE
                     )]
                 }
                 region$dist <- end(region) - end(region$ref)
@@ -7826,9 +7821,9 @@ plot_ORFquant_results <- function(
                 set.seed(666)
                 if (length(region) > 1000) {
                     region <- region[sample(
-                        x = 1:length(region),
+                        x = seq_along(region),
                         size = 1000,
-                        replace = F
+                        replace = FALSE
                     )]
                 }
                 region$dist <- start(region) - start(region$ref)
@@ -7872,9 +7867,9 @@ plot_ORFquant_results <- function(
                 set.seed(666)
                 if (length(region) > 1000) {
                     region <- region[sample(
-                        x = 1:length(region),
+                        x = seq_along(region),
                         size = 1000,
-                        replace = F
+                        replace = FALSE
                     )]
                 }
                 region$dist <- start(region$ref) - start(region)
@@ -8070,9 +8065,9 @@ plot_ORFquant_results <- function(
         set.seed(666)
         if (length(same_all) > 1000) {
             same_all <- same_all[sample(
-                x = 1:length(same_all),
+                x = seq_along(same_all),
                 size = 1000,
-                replace = F
+                replace = FALSE
             )]
         }
         same_all_5 <- promoters(
@@ -8123,7 +8118,7 @@ plot_ORFquant_results <- function(
         plots_iso <- list()
         plots_sketch <- list()
 
-        for (i in 1:length(topl_ok)) {
+        for (i in seq_along(topl_ok)) {
             rans <- listrang[[topl_ok[i]]]
             vals <- listvals[[topl_ok[i]]]
             vals_contr <- listvals[[topl_cons[i]]]
@@ -8179,13 +8174,13 @@ plot_ORFquant_results <- function(
             qnt <- unique(quantile(
                 rans$delta_iso,
                 probs = seq(0, 1, length.out = 4),
-                include.lowest = T
+                include.lowest = TRUE
             ))
 
             rans$group <- as.character(cut(
                 rans$delta_iso,
                 breaks = qnt,
-                include.lowest = T
+                include.lowest = TRUE
             ))
 
             tb <- aggregate(rans$delta_iso, by = list(rans$group), mean)
@@ -8202,7 +8197,7 @@ plot_ORFquant_results <- function(
             rans_contr$group <- "No_mixture"
             rownames(isos_contr) <- rans_contr$id
             rownames(vals_contr) <- rans_contr$id
-            levss <- sort(unique(rans$group), decreasing = F)
+            levss <- sort(unique(rans$group), decreasing = FALSE)
             levss <- c("No_mixture", levss)
             if (topl_ok[i] == "CDS_spanning") {
                 rans$spanning <- "downstream"
@@ -8223,7 +8218,7 @@ plot_ORFquant_results <- function(
             rans$group <- factor(rans$group, levels = levss)
 
             #HERE IT WAS THE PROBLEM
-            #levss<-levels(rans$group)[order(as.numeric(sapply(strsplit(unique(rans$group),"-"),"[[",1)),decreasing = F)]
+            #levss<-levels(rans$group)[order(as.numeric(sapply(strsplit(unique(rans$group),"-"),"[[",1)),decreasing = FALSE)]
             #levels(rans$group)<-levss
 
             #vals<-t(apply(vals,1,scale))
@@ -8432,7 +8427,6 @@ plot_ORFquant_results <- function(
                     y1 = c(.5, .05, .675, .675, .675, .675),
                     y2 = c(.85, .4, .685, .685, .685, .685),
                     coll = c("red", "blue", "red", "red", "red", "red"),
-                    stringsAsFactors = F
                 )
             }
 
@@ -8443,7 +8437,6 @@ plot_ORFquant_results <- function(
                     y1 = c(.5, .05, .575),
                     y2 = c(.85, .4, .785),
                     coll = c("red", "blue", "red"),
-                    stringsAsFactors = F
                 )
             }
 
@@ -8454,7 +8447,6 @@ plot_ORFquant_results <- function(
                     y1 = c(.5, .05, .225, .225, .225, .225),
                     y2 = c(.85, .4, .235, .235, .235, .235),
                     coll = c("red", "blue", "blue", "blue", "blue", "blue"),
-                    stringsAsFactors = F
                 )
             }
 
@@ -8465,7 +8457,6 @@ plot_ORFquant_results <- function(
                     y1 = c(.5, .05, .125),
                     y2 = c(.85, .4, .330),
                     coll = c("red", "blue", "blue"),
-                    stringsAsFactors = F
                 )
             }
 
@@ -8476,7 +8467,6 @@ plot_ORFquant_results <- function(
                     y1 = c(.5, .05, .225, .225, .225, .225),
                     y2 = c(.85, .4, .235, .235, .235, .235),
                     coll = c("red", "blue", "blue", "blue", "blue", "blue"),
-                    stringsAsFactors = F
                 )
             }
 
@@ -8487,7 +8477,6 @@ plot_ORFquant_results <- function(
                     y1 = c(.5, .05, .125),
                     y2 = c(.85, .4, .330),
                     coll = c("red", "blue", "blue"),
-                    stringsAsFactors = F
                 )
             }
 
@@ -8498,7 +8487,6 @@ plot_ORFquant_results <- function(
                     y1 = c(.5, .05, .675, .675, .675, .675),
                     y2 = c(.85, .4, .685, .685, .685, .685),
                     coll = c("red", "blue", "red", "red", "red", "red"),
-                    stringsAsFactors = F
                 )
             }
 
@@ -8509,7 +8497,6 @@ plot_ORFquant_results <- function(
                     y1 = c(.5, .05, .575),
                     y2 = c(.85, .4, .785),
                     coll = c("red", "blue", "red"),
-                    stringsAsFactors = F
                 )
             }
 
@@ -8528,7 +8515,6 @@ plot_ORFquant_results <- function(
                         "blue",
                         "blue"
                     ),
-                    stringsAsFactors = F
                 )
             }
 
@@ -8577,7 +8563,7 @@ plot_ORFquant_results <- function(
         heis_sk <- rep(.1, 10)
 
         all <- ggdraw()
-        for (i in 1:length(plots_ribo)) {
+        for (i in seq_along(plots_ribo)) {
             all <- all +
                 draw_plot(
                     plots_ribo[[i]],
@@ -8753,8 +8739,8 @@ plot_orfquant_locus <- function(
     stopifnot(length(locus) == 1)
     stopifnot(locus %in% names(orfquant_results$ORFs_gen))
 
-    orfs_quantified_gen <- orfquant_results$ORFs_gen %>%
-        subset(., str_detect(names(.), selgene))
+    orfs_quantified_gen <- orfquant_results$ORFs_gen |>
+        (\(x) subset(x, str_detect(names(x), selgene)))()
 
     orfquantgrscores = orfs_quantified_gen$TrP_pNpM[match(
         names(orfquantgr),
@@ -8764,36 +8750,26 @@ plot_orfquant_locus <- function(
     mcols(orfs_quantified_gen) <- mcols(orfquant_results$ORFs_tx)[
         match(names(orfs_quantified_gen), orfquant_results$ORFs_tx$ORF_id_tr),
     ]
-    seltxs <- orfs_quantified_gen$transcript_id %>% unique
+    seltxs <- orfs_quantified_gen$transcript_id |> unique()
 
     orfs_quantified_gen$feature <- 'CDS'
     orfs_quantified_gen$transcript = orfs_quantified_gen$transcript_id
-    orfs_quantified_tr <- anno$exons_tx %>%
-        .[unique(orfs_quantified_gen$transcript_id)]
+    orfs_quantified_tr <- anno$exons_tx[unique(orfs_quantified_gen$transcript_id)]
 
     #get the orfs, then get the negative coverage
     #add transcript info to the ORFs_tx object
-    seqinf <- Seqinfo(names(anno$exons_tx), anno$exons_tx %>% width %>% sum)
+    seqinf <- Seqinfo(names(anno$exons_tx), anno$exons_tx |> width() |> sum())
     #Now get the negatives for each ORF
-    utrs <- orfquant_results$ORFs_tx %>%
-        subset(gene_id == selgene) %>%
-        keepSeqlevels(seltxs) %>%
-        {
-            seqinfo(.) <- seqinf[seltxs]
-            .
-        } %>%
-        coverage %>%
-        as('GRanges') %>%
-        subset(score == 0) %>%
-        mapFromTranscripts(anno$exons_tx) %>%
-        {
-            .$transcript <- names(anno$exons_tx)[.$transcriptsHits]
-            .
-        } %>%
-        {
-            .$feature = 'utr'
-            .
-        }
+    utrs <- orfquant_results$ORFs_tx |>
+        subset(gene_id == selgene) |>
+        keepSeqlevels(seltxs) |>
+        (\(x) { seqinfo(x) <- seqinf[seltxs]; x })() |>
+        coverage() |>
+        as('GRanges') |>
+        subset(score == 0) |>
+        mapFromTranscripts(anno$exons_tx) |>
+        (\(x) { x$transcript <- names(anno$exons_tx)[x$transcriptsHits]; x })() |>
+        (\(x) { x$feature <- 'utr'; x })()
 
     orfquantgr <- c(
         orfs_quantified_gen[, c('feature', 'transcript')],
@@ -8810,62 +8786,44 @@ plot_orfquant_locus <- function(
         quantcol = 'TrP_pNpM'
     }
 
-    orfscores <- orfquantgr$feature %>%
-        unique %>%
-        setNames(
-            match(., orfs_quantified_gen$ORF_id_tr) %>%
-                orfs_quantified_gen[[quantcol]][.],
-            .
-        )
+    orfscores <- orfquantgr$feature |>
+        unique() |>
+        (\(x) setNames(
+            orfs_quantified_gen[[quantcol]][match(x, orfs_quantified_gen$ORF_id_tr)],
+            x
+        ))()
 
-    orfcols <- orfscores %>%
-        {
-            . / max(na.omit(.))
-        } %>%
-        c(0, .) %>%
-        map_chr(~ possibly(rgb, 'white')(0, ., 0)) %>%
-        setNames(c('0', orfquantgr$feature %>% unique))
+    orfcols <- orfscores |>
+        (\(x) x / max(na.omit(x)))() |>
+        (\(x) c(0, x))() |>
+        map_chr(\(x) possibly(rgb, 'white')(0, x, 0)) |>
+        setNames(c('0', orfquantgr$feature |> unique()))
 
     ###Define non selected
-    disctxs <- anno$txs_gene[selgene] %>%
-        unlist %>%
-        .$tx_name %>%
-        unique %>%
+    disctxs <- anno$txs_gene[selgene] |>
+        unlist() |>
+        (\(x) x$tx_name)() |>
+        unique() |>
         setdiff(seltxs)
 
-    disc_orfquantgr <- anno$cds_txs_coords %>%
-        keepSeqlevels(disctxs, 'coarse') %>%
-        {
-            seqinfo(.) <- seqinf[disctxs]
-            .
-        } %>%
-        coverage %>%
-        as('GRanges') %>%
-        subset(.$score == 0) %>%
-        {
-            txgr = .
-            out = mapFromTranscripts(txgr, anno$exons_tx)
-            out$score = txgr$score[out$xHits]
+    disc_orfquantgr <- anno$cds_txs_coords |>
+        keepSeqlevels(disctxs, 'coarse') |>
+        (\(x) { seqinfo(x) <- seqinf[disctxs]; x })() |>
+        coverage() |>
+        as('GRanges') |>
+        (\(x) subset(x, x$score == 0))() |>
+        (\(txgr) {
+            out <- mapFromTranscripts(txgr, anno$exons_tx)
+            out$score <- txgr$score[out$xHits]
             out
-        } %>%
-        {
-            .$transcript <- names(anno$exons_tx)[.$transcriptsHits]
-            .
-        } %>%
-        {
-            .$feature = ifelse(.$score == 0, 'utr', 'CDS')
-            .
-        }
-    disc_orfquantgr %<>%
+        })() |>
+        (\(x) { x$transcript <- names(anno$exons_tx)[x$transcriptsHits]; x })() |>
+        (\(x) { x$feature <- dplyr::if_else(x$score == 0, 'utr', 'CDS'); x })()
+    disc_orfquantgr <- disc_orfquantgr |>
         c(
-            .,
-            anno$cds_txs[disctxs] %>%
-                unlist %>%
-                {
-                    .$feature = rep('CDS', length(.))
-                    .$transcript = names(.)
-                    .
-                }
+            anno$cds_txs[disctxs] |>
+                unlist() |>
+                (\(x) { x$feature <- rep('CDS', length(x)); x$transcript <- names(x); x })()
         )
     discORFnames <- paste0(
         disctxs,
@@ -8873,20 +8831,17 @@ plot_orfquant_locus <- function(
         start(anno$cds_txs_coords[disctxs]),
         '_',
         end(anno$cds_txs_coords[disctxs])
-    ) %>%
+    ) |>
         setNames(disctxs)
     disc_orfquantgr$symbol = discORFnames[disc_orfquantgr$transcript]
 
-    fakejreads <- riboseqcoutput$junctions %>%
-        subset(any(gene_id == selgene)) %>%
-        resize(width(.) + 2, 'center') %>%
-        {
-            .$cigar <- paste0('1M', width(.) - 2, 'N', '1M')
-            .
-        }
+    fakejreads <- riboseqcoutput$junctions |>
+        (\(x) subset(x, any(gene_id == selgene)))() |>
+        (\(x) resize(x, width(x) + 2, 'center'))() |>
+        (\(x) { x$cigar <- paste0('1M', width(x) - 2, 'N', '1M'); x })()
 
     fakejreads <- fakejreads[
-        map2(seq_along(fakejreads[]), fakejreads$reads, rep) %>% unlist
+        map2(seq_along(fakejreads[]), fakejreads$reads, rep) |> unlist()
     ]
 
     ncols <- 2
@@ -8923,24 +8878,23 @@ plot_orfquant_locus <- function(
         orfquantgr_sorted$symbol = names(orfquantgr_sorted)
         #add utrs for each ORF
         #for each selected ORF
-        orftrpairs <- orfquantgr_sorted %>%
-            subset(feature != 'utr') %>%
-            mcols %>%
-            as.data.frame %>%
-            distinct
-        orfutrs <- orfquantgr_sorted %>% subset(feature == 'utr')
-        orfutrs <- lapply(1:nrow(orftrpairs), function(i) {
-            orfutrs <- orfutrs %>%
-                subset(transcript == orftrpairs$transcript[i])
-            orfutrs$symbol = orftrpairs$feature[i]
-            names(orfutrs) = orfutrs$symbol
+        orftrpairs <- orfquantgr_sorted |>
+            subset(feature != 'utr') |>
+            mcols() |>
+            as.data.frame() |>
+            distinct()
+        orfutrs <- orfquantgr_sorted |> subset(feature == 'utr')
+        orfutrs <- lapply(seq_len(nrow(orftrpairs)), function(i) {
+            orfutrs <- subset(orfutrs, transcript == orftrpairs$transcript[i])
+            orfutrs$symbol <- orftrpairs$feature[i]
+            names(orfutrs) <- orfutrs$symbol
             orfutrs
-        }) %>%
-            GRangesList %>%
-            unlist
-        orfquantgr_sorted <- orfquantgr_sorted %>%
-            subset(feature != 'utr') %>%
-            c(., orfutrs)
+        }) |>
+            GRangesList() |>
+            unlist()
+        orfquantgr_sorted <- orfquantgr_sorted |>
+            subset(feature != 'utr') |>
+            c(orfutrs)
         orfquantgr_sorted
     }
     orfquantgr_sorted <- fix_utrs(orfquantgr_sorted)
@@ -9000,26 +8954,18 @@ plot_orfquant_locus <- function(
             # DataTrack(riboseqcoutput$P_sites_all%>%subsetByOverlaps(selgenerange),type='hist'),
             GeneRegionTrack(
                 name = 'discarded\ntranscripts',
-                anno$exons_tx[disctxs] %>%
-                    unlist %>%
-                    {
-                        .$transcript = names(.)
-                        .$feature = rep('exon', length(.))
-                        .
-                    },
+                anno$exons_tx[disctxs] |>
+                    unlist() |>
+                    (\(x) { x$transcript <- names(x); x$feature <- rep('exon', length(x)); x })(),
                 fill = '#F7CAC9',
                 transcriptAnnotation = 'transcript'
             ),
             GeneRegionTrack(
                 exon = 'forestgreen',
                 name = 'selected\ntranscripts',
-                anno$exons_tx[seltxs] %>%
-                    unlist %>%
-                    {
-                        .$transcript = names(.)
-                        .$feature = rep('exon', length(.))
-                        .
-                    },
+                anno$exons_tx[seltxs] |>
+                    unlist() |>
+                    (\(x) { x$transcript <- names(x); x$feature <- rep('exon', length(x)); x })(),
                 fill = '#F7CAC9',
                 transcriptAnnotation = 'transcript'
             ),
@@ -9027,7 +8973,7 @@ plot_orfquant_locus <- function(
                 legend = TRUE,
                 name = '\t\t P-Sites',
                 col.histogram = 'forestgreen',
-                riboseqcoutput$P_sites_all %>% subsetByOverlaps(selgenerange),
+                subsetByOverlaps(riboseqcoutput$P_sites_all, selgenerange),
                 type = 'hist'
             ),
             AlignmentsTrack(
@@ -9056,12 +9002,8 @@ plot_orfquant_locus <- function(
                 utr = 'white',
                 transcriptAnnotation = 'symbol'
                 # id=orfquantgr_sorted$symbol
-            ) %>%
-                # identity
-                {
-                    displayPars(.)[names(orfcols)] <- orfcols
-                    .
-                }
+            ) |>
+                (\(x) { displayPars(x)[names(orfcols)] <- orfcols; x })()
         ),
         # transcriptAnnotation="transcript",
         col.labels = 'black',
@@ -9069,11 +9011,7 @@ plot_orfquant_locus <- function(
     )
     tmp <- GeneRegionTrack(
         name = 'Selected\nORFs',
-        orfquantgr_sorted %>%
-            {
-                .$symbol = 'foo'
-                .
-            },
+        (\(x) { x$symbol <- 'foo'; x })(orfquantgr_sorted),
         collapse = FALSE,
         thinBoxFeature = 'utr',
         CDS = 'red',
@@ -9088,13 +9026,12 @@ plot_orfquant_locus <- function(
     pushViewport(vp2)
     cols = I(c(orfcols[which.min(orfscores)], orfcols[which.max(orfscores)]))
     grid.draw(g_legend(
-        qplot(x = 1:2, y = 1:2, color = range(orfscores, na.rm = T)) +
+        qplot(x = 1:2, y = 1:2, color = range(orfscores, na.rm = TRUE)) +
             scale_color_gradient(
                 name = 'Normalized ORF Expr\n(ORFs_pM)',
                 breaks = setNames(
                     sort(na.omit(orfscores)),
-                    floor(na.omit(sort(orfscores))) %>%
-                        format(big.mark = ",", scientific = FALSE)
+                    (\(x) format(x, big.mark = ",", scientific = FALSE))(floor(na.omit(sort(orfscores))))
                 ),
                 low = cols[1],
                 high = cols[2]

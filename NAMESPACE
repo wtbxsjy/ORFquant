@@ -48,5 +48,5 @@ import(Rsamtools)
 # PATCHED: BiocGenerics imported LAST so its Position and combine override ggplot2/gridExtra
 import(BiocGenerics)
 
-importFrom(magrittr, "%>%", "%<>%")
+
 importFrom(methods, setRefClass, setMethod, new)

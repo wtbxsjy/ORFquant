@@ -1,8 +1,6 @@
 # Test for DPSS caching performance and correctness
 library(testthat)
 
-context("Performance optimizations")
-
 test_that("DPSS cache returns correct values", {
     skip_if_not_installed("multitaper")
     library(multitaper)
