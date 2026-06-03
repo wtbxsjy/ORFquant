@@ -1,0 +1,149 @@
+# =============================================================================
+# GitHub Actions: Build and Release ORFquant on version tags
+# =============================================================================
+#
+# Trigger: push a tag like v1.3.2
+#   git tag v1.3.2
+#   git push origin v1.3.2
+#
+# Result: GitHub Release with ORFquant_1.3.2.tar.gz attached
+# =============================================================================
+
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'           # v1.0.0, v1.3.2, etc.
+  workflow_dispatch:    # Allow manual trigger from GitHub UI
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    name: Build R package and create release
+
+    steps:
+      # ------------------------------------------------------------------
+      # 1. Checkout
+      # ------------------------------------------------------------------
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------------------
+      # 2. Extract version from tag (strip leading 'v')
+      # ------------------------------------------------------------------
+      - name: Extract version
+        id: version
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            TAG="${{ github.ref_name }}"
+            VERSION="${TAG#v}"
+          else
+            VERSION=$(grep '^Version:' DESCRIPTION | awk '{print $2}')
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Release version: ${VERSION}"
+
+      # ------------------------------------------------------------------
+      # 3. Setup R with Bioconductor
+      # ------------------------------------------------------------------
+      - name: Setup R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: 'release'
+          use-public-rspm: true
+
+      - name: Setup Bioconductor
+        uses: grimbough/bioc-actions/setup-bioc@v1
+        with:
+          bioc-version: 'release'
+
+      # ------------------------------------------------------------------
+      # 4. Install system dependencies
+      # ------------------------------------------------------------------
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libcurl4-openssl-dev \
+            libssl-dev \
+            libxml2-dev \
+            libfontconfig1-dev \
+            libharfbuzz-dev \
+            libfribidi-dev \
+            libfreetype6-dev \
+            libpng-dev \
+            libtiff5-dev \
+            libjpeg-dev
+
+      # ------------------------------------------------------------------
+      # 5. Install R package dependencies
+      # ------------------------------------------------------------------
+      - name: Install R dependencies
+        run: |
+          # Install remotes for BiocManager
+          Rscript -e 'install.packages(c("remotes", "BiocManager"), repos = "https://cloud.r-project.org", quiet = TRUE)'
+
+          # Parse DESCRIPTION and install Depends/Imports/Suggests
+          Rscript -e '
+            deps <- desc::desc_get_deps()
+            bioc_deps <- deps$package[deps$type == "Depends" | deps$type == "Imports"]
+            # Filter base R packages
+            base_pkgs <- rownames(installed.packages(priority = "base"))
+            bioc_deps <- setdiff(bioc_deps, c("R", base_pkgs))
+            if (length(bioc_deps) > 0) {
+              BiocManager::install(bioc_deps, update = FALSE, ask = FALSE)
+            }
+          '
+
+      # ------------------------------------------------------------------
+      # 6. Build R package source tarball
+      # ------------------------------------------------------------------
+      - name: Build package
+        run: |
+          R CMD build .
+          echo "PKG_FILE=$(ls ORFquant_*.tar.gz)" >> $GITHUB_ENV
+
+      # ------------------------------------------------------------------
+      # 7. Verify the built package
+      # ------------------------------------------------------------------
+      - name: Check package
+        run: |
+          R CMD check --no-manual --no-tests ${{ env.PKG_FILE }}
+        continue-on-error: true
+
+      # ------------------------------------------------------------------
+      # 8. Create GitHub Release and upload asset
+      # ------------------------------------------------------------------
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "ORFquant v${{ steps.version.outputs.version }}"
+          body: |
+            ## ORFquant ${{ steps.version.outputs.version }}
+
+            ### Installation
+
+            ```r
+            # Install from Bioconductor (when submitted)
+            # BiocManager::install("ORFquant")
+
+            # Install from GitHub release
+            install.packages(
+              "ORFquant_${{ steps.version.outputs.version }}.tar.gz",
+              repos = NULL, type = "source"
+            )
+
+            # Or with remotes
+            remotes::install_github("wtbxsjy/ORFquant", ref = "${{ github.ref_name }}")
+            ```
+
+            ### Changes
+
+            See commit history for details.
+          files: ${{ env.PKG_FILE }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

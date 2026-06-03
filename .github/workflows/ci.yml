@@ -1,0 +1,57 @@
+# =============================================================================
+# GitHub Actions: CI - Check, test, and verify on every push and PR
+# =============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [master, dev]
+  pull_request:
+    branches: [master, dev]
+  workflow_dispatch:
+
+jobs:
+  r-cmd-check:
+    runs-on: ubuntu-latest
+    name: R CMD check
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: 'release'
+          use-public-rspm: true
+
+      - name: Setup Bioconductor
+        uses: grimbough/bioc-actions/setup-bioc@v1
+        with:
+          bioc-version: 'release'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libcurl4-openssl-dev libssl-dev libxml2-dev \
+            libfontconfig1-dev libharfbuzz-dev libfribidi-dev \
+            libfreetype6-dev libpng-dev libtiff5-dev libjpeg-dev
+
+      - name: Install R dependencies
+        run: |
+          Rscript -e 'install.packages(c("remotes", "BiocManager", "rcmdcheck"), repos = "https://cloud.r-project.org", quiet = TRUE)'
+          Rscript -e '
+            deps <- desc::desc_get_deps()
+            pkg_deps <- deps$package[deps$type %in% c("Depends", "Imports", "Suggests")]
+            base_pkgs <- rownames(installed.packages(priority = "base"))
+            pkg_deps <- setdiff(pkg_deps, c("R", base_pkgs))
+            if (length(pkg_deps) > 0) {
+              BiocManager::install(pkg_deps, update = FALSE, ask = FALSE)
+            }
+          '
+
+      - name: R CMD check
+        run: rcmdcheck::rcmdcheck(args = "--no-manual", error_on = "warning")
+        shell: Rscript {0}
