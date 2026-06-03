@@ -6,7 +6,9 @@
 #   git tag v1.3.2
 #   git push origin v1.3.2
 #
-# Result: GitHub Release with ORFquant_1.3.2.tar.gz attached
+# Result: GitHub Release with:
+#   - ORFquant_X.Y.Z.tar.gz  (R source package)
+#   - orfquant_X.Y.Z.sif     (Singularity/Apptainer container)
 # =============================================================================
 
 name: Build and Release
@@ -14,24 +16,23 @@ name: Build and Release
 on:
   push:
     tags:
-      - 'v*'           # v1.0.0, v1.3.2, etc.
-  workflow_dispatch:    # Allow manual trigger from GitHub UI
+      - 'v*'
+  workflow_dispatch:
 
 jobs:
-  build-and-release:
+  # =========================================================================
+  # Job 1: Build R source package
+  # =========================================================================
+  build-r-package:
     runs-on: ubuntu-latest
-    name: Build R package and create release
+    name: Build R package
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
     steps:
-      # ------------------------------------------------------------------
-      # 1. Checkout
-      # ------------------------------------------------------------------
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # ------------------------------------------------------------------
-      # 2. Extract version from tag (strip leading 'v')
-      # ------------------------------------------------------------------
       - name: Extract version
         id: version
         run: |
@@ -42,11 +43,8 @@ jobs:
             VERSION=$(grep '^Version:' DESCRIPTION | awk '{print $2}')
           fi
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "Release version: ${VERSION}"
+          echo "Version: ${VERSION}"
 
-      # ------------------------------------------------------------------
-      # 3. Setup R with Bioconductor
-      # ------------------------------------------------------------------
       - name: Setup R
         uses: r-lib/actions/setup-r@v2
         with:
@@ -58,63 +56,130 @@ jobs:
         with:
           bioc-version: 'release'
 
-      # ------------------------------------------------------------------
-      # 4. Install system dependencies
-      # ------------------------------------------------------------------
       - name: Install system dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev \
-            libssl-dev \
-            libxml2-dev \
-            libfontconfig1-dev \
-            libharfbuzz-dev \
-            libfribidi-dev \
-            libfreetype6-dev \
-            libpng-dev \
-            libtiff5-dev \
-            libjpeg-dev
+            libcurl4-openssl-dev libssl-dev libxml2-dev \
+            libfontconfig1-dev libharfbuzz-dev libfribidi-dev \
+            libfreetype6-dev libpng-dev libtiff5-dev libjpeg-dev
 
-      # ------------------------------------------------------------------
-      # 5. Install R package dependencies
-      # ------------------------------------------------------------------
       - name: Install R dependencies
         run: |
-          # Install remotes for BiocManager
           Rscript -e 'install.packages(c("remotes", "BiocManager"), repos = "https://cloud.r-project.org", quiet = TRUE)'
-
-          # Parse DESCRIPTION and install Depends/Imports/Suggests
           Rscript -e '
             deps <- desc::desc_get_deps()
-            bioc_deps <- deps$package[deps$type == "Depends" | deps$type == "Imports"]
-            # Filter base R packages
+            pkg_deps <- deps$package[deps$type %in% c("Depends", "Imports")]
             base_pkgs <- rownames(installed.packages(priority = "base"))
-            bioc_deps <- setdiff(bioc_deps, c("R", base_pkgs))
-            if (length(bioc_deps) > 0) {
-              BiocManager::install(bioc_deps, update = FALSE, ask = FALSE)
+            pkg_deps <- setdiff(pkg_deps, c("R", base_pkgs))
+            if (length(pkg_deps) > 0) {
+              BiocManager::install(pkg_deps, update = FALSE, ask = FALSE)
             }
           '
 
-      # ------------------------------------------------------------------
-      # 6. Build R package source tarball
-      # ------------------------------------------------------------------
-      - name: Build package
+      - name: Build source package
         run: |
           R CMD build .
           echo "PKG_FILE=$(ls ORFquant_*.tar.gz)" >> $GITHUB_ENV
 
-      # ------------------------------------------------------------------
-      # 7. Verify the built package
-      # ------------------------------------------------------------------
-      - name: Check package
-        run: |
-          R CMD check --no-manual --no-tests ${{ env.PKG_FILE }}
+      - name: Verify package
+        run: R CMD check --no-manual --no-tests ${{ env.PKG_FILE }}
         continue-on-error: true
 
-      # ------------------------------------------------------------------
-      # 8. Create GitHub Release and upload asset
-      # ------------------------------------------------------------------
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: r-package
+          path: ORFquant_*.tar.gz
+          retention-days: 7
+
+  # =========================================================================
+  # Job 2: Build Singularity/Apptainer container
+  # =========================================================================
+  build-container:
+    runs-on: ubuntu-latest
+    name: Build Singularity container
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract version
+        id: version
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            TAG="${{ github.ref_name }}"
+            VERSION="${TAG#v}"
+          else
+            VERSION=$(grep '^Version:' DESCRIPTION | awk '{print $2}')
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Setup Apptainer
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            apptainer squashfuse fuse-overlayfs uidmap
+          apptainer version
+
+      - name: Build container
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          DEF_FILE="inst/containers/Singularity.orfquant.def"
+          SIF_FILE="orfquant_${VERSION}.sif"
+
+          echo "Building ${SIF_FILE} from ${DEF_FILE} ..."
+          sudo apptainer build --fakeroot "${SIF_FILE}" "${DEF_FILE}"
+          echo "Container built: $(ls -lh ${SIF_FILE})"
+
+      - name: Upload container artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: singularity-container
+          path: orfquant_*.sif
+          retention-days: 7
+
+  # =========================================================================
+  # Job 3: Create GitHub Release with all artifacts
+  # =========================================================================
+  create-release:
+    runs-on: ubuntu-latest
+    name: Create GitHub Release
+    needs: [build-r-package, build-container]
+    if: success() || needs.build-r-package.result == 'success'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract version
+        id: version
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            TAG="${{ github.ref_name }}"
+            VERSION="${TAG#v}"
+          else
+            VERSION=$(grep '^Version:' DESCRIPTION | awk '{print $2}')
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Download R package
+        uses: actions/download-artifact@v4
+        with:
+          name: r-package
+          path: artifacts
+
+      - name: Download container
+        uses: actions/download-artifact@v4
+        with:
+          name: singularity-container
+          path: artifacts
+        continue-on-error: true
+
+      - name: List artifacts
+        run: ls -lh artifacts/
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -122,26 +187,44 @@ jobs:
           body: |
             ## ORFquant ${{ steps.version.outputs.version }}
 
+            Splice-aware quantification of ORF translation using Ribo-seq data.
+
             ### Installation
 
-            ```r
-            # Install from Bioconductor (when submitted)
-            # BiocManager::install("ORFquant")
+            #### From R package (recommended)
 
-            # Install from GitHub release
+            ```r
+            # Direct install from release tarball
             install.packages(
               "ORFquant_${{ steps.version.outputs.version }}.tar.gz",
               repos = NULL, type = "source"
             )
 
-            # Or with remotes
+            # Or from GitHub
             remotes::install_github("wtbxsjy/ORFquant", ref = "${{ github.ref_name }}")
             ```
 
-            ### Changes
+            #### With Singularity/Apptainer container
 
-            See commit history for details.
-          files: ${{ env.PKG_FILE }}
+            ```bash
+            # Use the pre-built container
+            apptainer exec orfquant_${{ steps.version.outputs.version }}.sif Rscript your_script.R
+
+            # Or build locally
+            apptainer build --fakeroot orfquant_${{ steps.version.outputs.version }}.sif \\
+                inst/containers/Singularity.orfquant.def
+            ```
+
+            ### Changes in v${{ steps.version.outputs.version }}
+
+            - **Modernized R code**: R >= 4.0.0, S4 accessor functions, type-stable vapply(), nrow()/ncol()
+            - **Performance**: DPSS caching (3-34x speedup), pre-allocation, early filtering
+            - **Robustness**: S4 slot access replaced with accessor functions (BioC-compatible)
+            - **Testing**: testthat unit tests for modernization patterns + DPSS performance
+
+            See commit history for full details.
+          files: |
+            artifacts/*
           generate_release_notes: true
           draft: false
           prerelease: false
