@@ -67,13 +67,23 @@ jobs:
       - name: Install R dependencies
         run: |
           Rscript -e 'install.packages(c("remotes", "BiocManager"), repos = "https://cloud.r-project.org", quiet = TRUE)'
+          # Parse DESCRIPTION manually (no external package needed)
           Rscript -e '
-            deps <- desc::desc_get_deps()
-            pkg_deps <- deps$package[deps$type %in% c("Depends", "Imports")]
+            dcf <- read.dcf("DESCRIPTION")
+            dep_fields <- c("Depends", "Imports")
+            all_deps <- character(0)
+            for (f in dep_fields) {
+              if (f %in% colnames(dcf)) {
+                deps <- unlist(strsplit(gsub("\\n", " ", dcf[1, f]), ",\\s*"))
+                deps <- gsub("\\s*\\(.*\\)", "", deps)  # remove version specs
+                deps <- trimws(deps)
+                all_deps <- c(all_deps, deps)
+              }
+            }
             base_pkgs <- rownames(installed.packages(priority = "base"))
-            pkg_deps <- setdiff(pkg_deps, c("R", base_pkgs))
-            if (length(pkg_deps) > 0) {
-              BiocManager::install(pkg_deps, update = FALSE, ask = FALSE)
+            all_deps <- setdiff(all_deps, c("R", base_pkgs))
+            if (length(all_deps) > 0) {
+              BiocManager::install(all_deps, update = FALSE, ask = FALSE)
             }
           '
 
@@ -118,7 +128,8 @@ jobs:
 
       - name: Setup Apptainer
         run: |
-          sudo apt-get update -qq
+          # Apptainer official install (Ubuntu 24.04)
+          curl -fsSL https://packagecloud.io/install/repositories/apptainer/apptainer/script.deb.sh | sudo bash
           sudo apt-get install -y --no-install-recommends \
             apptainer squashfuse fuse-overlayfs uidmap
           apptainer version
