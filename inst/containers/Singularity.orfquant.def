@@ -4,7 +4,7 @@ From: bioconductor/bioconductor_docker:RELEASE_3_20
 %labels
     Author wtbxsjy <wtbxsjy@hotmail.com>
     Version 1.3.2
-    Description ORFquant 1.3.2 — Splice-aware Quantification of ORF translation
+    Description ORFquant 1.3.2 + RiboseQC — Ribo-seq ORF quantification and QC
     R_Version 4.4+
 
 %setup
@@ -53,6 +53,25 @@ From: bioconductor/bioconductor_docker:RELEASE_3_20
     R --vanilla -q -e 'library(ORFquant); message("ORFquant ", packageVersion("ORFquant"))'
 
     # =========================================================================
+    # Install RiboseQC (from GitHub, R 4.2+ compatible fork)
+    # =========================================================================
+    R --vanilla -q -e '
+    # RiboseQC CRAN/BioC dependencies
+    pkgs <- c("devtools", "ggpubr", "reshape2", "ade4", "foreach", "doMC",
+              "seqinr", "viridis", "R.methodsS3", "iterators", "jsonlite",
+              "xfun", "knitr", "rmarkdown")
+    for (pkg in pkgs) {
+      if (!requireNamespace(pkg, quietly = TRUE))
+        install.packages(pkg, repos = "https://cloud.r-project.org")
+    }
+    # RiboseQC R 4.2+ compatible fork (fixes GenomicFeatures compatibility)
+    devtools::install_github("hsinyemwu/RiboseQC_R4.2.1", upgrade = "never")
+    '
+
+    # Verify RiboseQC
+    R --vanilla -q -e 'library(RiboseQC); message("RiboseQC installed OK")'
+
+    # =========================================================================
     # Cleanup
     # =========================================================================
     rm -rf /opt/orfquant
@@ -65,23 +84,19 @@ From: bioconductor/bioconductor_docker:RELEASE_3_20
     exec "$@"
 
 %help
-    ORFquant 1.3.2 — Splice-aware Quantification of ORF translation
+    ORFquant 1.3.2 + RiboseQC — Ribo-seq ORF quantification and QC
 
-    Modernization changes (v1.3.2):
+    Included packages:
+      - ORFquant 1.3.2  — Splice-aware Quantification of ORF translation
+      - RiboseQC        — Quality Control of Ribo-seq data, P-site offset selection
+
+    ORFquant modernization (v1.3.2):
       - R >= 4.0.0 required
-      - S4 slot access (@ranges, @strand, @width, etc.) → accessor functions
+      - S4 slot access → accessor functions (ranges(), strand(), width(), etc.)
       - dim()[1]/[2] → nrow()/ncol()
-      - Redundant stringsAsFactors = FALSE removed from data.frame()
       - c() accumulation in loops → pre-allocation
       - sapply() → vapply() for type-stable mapping
-      - base ifelse() → dplyr::if_else()
-      - DPSS caching infrastructure
-
-    Performance optimizations (v1.3.0+):
-      - DPSS Slepian caching: 3-34x speedup in spectral analysis
-      - Vectorized calc_orf_pval: batch P-site extraction
-      - Early filtering: skip non-qualifying ORFs before expensive computation
-      - Memory pre-allocation: reduced dynamic vector growth overhead
+      - DPSS caching: 3-34x speedup
 
     Build:
         apptainer build --fakeroot -F orfquant_1.3.2.sif \\
