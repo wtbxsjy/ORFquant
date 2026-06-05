@@ -31,15 +31,17 @@ From: bioconductor/bioconductor_docker:RELEASE_3_20
         && rm -rf /var/lib/apt/lists/*
 
     # =========================================================================
-    # Install only missing CRAN/BioC packages (most are pre-installed)
+    # Install remaining deps not in base bioconductor_docker image
     # =========================================================================
     R --vanilla -q -e '
-    pkgs_needed <- c("multitaper", "cowplot", "gridExtra", "dplyr")
-    for (pkg in pkgs_needed) {
-      if (!requireNamespace(pkg, quietly = TRUE)) {
-        install.packages(pkg, repos = "https://cloud.r-project.org")
-      }
-    }
+    if (!requireNamespace("BiocManager", quietly = TRUE))
+        install.packages("BiocManager", repos = "https://cloud.r-project.org")
+    BiocManager::install(c(
+        "rtracklayer", "BSgenome", "Biostrings", "GenomicFeatures",
+        "GenomicAlignments", "GenomicFiles", "BiocGenerics",
+        "BiocParallel", "GenomicRanges", "Rsamtools", "tidyr",
+        "multitaper", "cowplot", "gridExtra", "dplyr"
+    ), update = FALSE, ask = FALSE)
     '
 
     # =========================================================================
