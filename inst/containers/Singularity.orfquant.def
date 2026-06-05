@@ -11,61 +11,46 @@ From: bioconductor/bioconductor_docker:RELEASE_3_20
     ROOTFS="${SINGULARITY_ROOTFS:-${APPTAINER_ROOTFS}}"
     mkdir -p "${ROOTFS}/etc"
     mkdir -p "${ROOTFS}/opt/orfquant"
-    # Copy host DNS config so apt-get and R package installs can resolve names
+    # Copy host DNS for network access during build
     cp /etc/resolv.conf "${ROOTFS}/etc/resolv.conf"
 
 %files
-    # Copy the ORFquant source tree into the container
-    ../../ /opt/orfquant
+    # Copy only files needed for R CMD INSTALL (not the entire repo)
+    ../../DESCRIPTION /opt/orfquant/DESCRIPTION
+    ../../NAMESPACE /opt/orfquant/NAMESPACE
+    ../../R /opt/orfquant/R
+    ../../inst/rmd /opt/orfquant/inst/rmd
+    ../../man /opt/orfquant/man
 
 %post
     # =========================================================================
-    # System dependencies
+    # System dependencies (mostly already in bioconductor_docker image)
     # =========================================================================
     apt-get update -qq && apt-get install -y --no-install-recommends \
         libcurl4-openssl-dev \
         libssl-dev \
-        libxml2-dev \
-        libfontconfig1-dev \
-        libharfbuzz-dev \
-        libfribidi-dev \
-        libfreetype6-dev \
-        libpng-dev \
-        libtiff5-dev \
-        libjpeg-dev \
         libgit2-dev \
         && rm -rf /var/lib/apt/lists/*
 
     # =========================================================================
-    # Install ORFquant dependencies via BiocManager
+    # Install only missing CRAN/BioC packages (most are pre-installed)
     # =========================================================================
     R --vanilla -q -e '
-    if (!requireNamespace("BiocManager", quietly = TRUE))
-        install.packages("BiocManager", repos = "https://cloud.r-project.org")
-    BiocManager::install(c(
-        "rtracklayer", "BSgenome", "Biostrings", "GenomicFeatures",
-        "multitaper", "GenomicAlignments", "GenomicFiles",
-        "ggplot2", "cowplot", "gridExtra", "knitr", "rmarkdown",
-        "BiocParallel", "GenomicRanges", "Rsamtools", "tidyr",
-        "BiocGenerics", "devtools", "testthat"
-    ), update = FALSE, ask = FALSE)
+    pkgs_needed <- c("multitaper", "cowplot", "gridExtra", "dplyr")
+    for (pkg in pkgs_needed) {
+      if (!requireNamespace(pkg, quietly = TRUE)) {
+        install.packages(pkg, repos = "https://cloud.r-project.org")
+      }
+    }
     '
 
     # =========================================================================
     # Install ORFquant from local source
     # =========================================================================
-    R --vanilla -q -e '
-    pkg_dir <- "/opt/orfquant"
-    if (!dir.exists(pkg_dir)) stop("ORFquant source not found at: ", pkg_dir)
-    message("Installing ORFquant from: ", pkg_dir)
-    status <- system(sprintf("R CMD INSTALL %s", shQuote(pkg_dir)))
-    if (status != 0) stop("R CMD INSTALL failed with status ", status)
+    R CMD INSTALL /opt/orfquant
 
     # Verify
-    library(ORFquant)
-    message("ORFquant version: ", packageVersion("ORFquant"))
-    message("Installation OK")
-    '
+    R --vanilla -q -e 'library(ORFquant); message("ORFquant ", packageVersion("ORFquant"))'
 
     # =========================================================================
     # Cleanup
