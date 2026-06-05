@@ -127,12 +127,9 @@ jobs:
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
       - name: Setup Apptainer
-        run: |
-          # Apptainer official install (Ubuntu 24.04)
-          curl -fsSL https://packagecloud.io/install/repositories/apptainer/apptainer/script.deb.sh | sudo bash
-          sudo apt-get install -y --no-install-recommends \
-            apptainer squashfuse fuse-overlayfs uidmap
-          apptainer version
+        uses: eWaterCycle/setup-apptainer@v2
+        with:
+          apptainer-version: 'latest'
 
       - name: Build container
         run: |
@@ -141,7 +138,7 @@ jobs:
           SIF_FILE="orfquant_${VERSION}.sif"
 
           echo "Building ${SIF_FILE} from ${DEF_FILE} ..."
-          sudo apptainer build --fakeroot "${SIF_FILE}" "${DEF_FILE}"
+          apptainer build --fakeroot "${SIF_FILE}" "${DEF_FILE}"
           echo "Container built: $(ls -lh ${SIF_FILE})"
 
       - name: Upload container artifact
