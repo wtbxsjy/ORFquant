@@ -10,9 +10,9 @@ From: bioconductor/bioconductor_docker:RELEASE_3_20
 %setup
     ROOTFS="${SINGULARITY_ROOTFS:-${APPTAINER_ROOTFS}}"
     mkdir -p "${ROOTFS}/etc"
-    rm -f "${ROOTFS}/etc/resolv.conf"
-    : > "${ROOTFS}/etc/resolv.conf"
     mkdir -p "${ROOTFS}/opt/orfquant"
+    # Copy host DNS config so apt-get and R package installs can resolve names
+    cp /etc/resolv.conf "${ROOTFS}/etc/resolv.conf"
 
 %files
     # Copy the ORFquant source tree into the container
