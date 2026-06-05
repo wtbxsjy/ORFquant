@@ -13,14 +13,12 @@ From: bioconductor/bioconductor_docker:RELEASE_3_20
     mkdir -p "${ROOTFS}/opt/orfquant"
     # Copy host DNS for network access during build
     cp /etc/resolv.conf "${ROOTFS}/etc/resolv.conf"
-
-%files
-    # Copy only files needed for R CMD INSTALL (not the entire repo)
-    ../../DESCRIPTION /opt/orfquant/DESCRIPTION
-    ../../NAMESPACE /opt/orfquant/NAMESPACE
-    ../../R /opt/orfquant/R
-    ../../inst/rmd /opt/orfquant/inst/rmd
-    ../../man /opt/orfquant/man
+    # Copy only files needed for R CMD INSTALL (much faster than %files via FUSE)
+    cp -r "${PWD}/DESCRIPTION" "${ROOTFS}/opt/orfquant/"
+    cp -r "${PWD}/NAMESPACE"  "${ROOTFS}/opt/orfquant/"
+    cp -r "${PWD}/R"          "${ROOTFS}/opt/orfquant/"
+    cp -r "${PWD}/man"        "${ROOTFS}/opt/orfquant/"
+    cp -r "${PWD}/inst"       "${ROOTFS}/opt/orfquant/"
 
 %post
     # =========================================================================
