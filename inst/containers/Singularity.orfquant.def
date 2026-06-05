@@ -64,8 +64,8 @@ From: bioconductor/bioconductor_docker:RELEASE_3_20
       if (!requireNamespace(pkg, quietly = TRUE))
         install.packages(pkg, repos = "https://cloud.r-project.org")
     }
-    # RiboseQC R 4.2+ compatible fork (fixes GenomicFeatures compatibility)
-    devtools::install_github("hsinyemwu/RiboseQC_R4.2.1", upgrade = "never")
+    # RiboseQC from developer fork
+    devtools::install_github("lcalviell/Ribo-seQC", upgrade = "never")
     '
 
     # Verify RiboseQC
