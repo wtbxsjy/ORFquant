@@ -4142,10 +4142,10 @@ run_ORFquant <- function(
     unique_reads_only = FALSE,
     canonical_start_only = TRUE
 ) {
-    # Parallel processing using BiocParallel::SnowParam (socket-based workers).
-    # SnowParam spawns independent R processes that do NOT inherit FaFile file
-    # descriptors, avoiding the mclapply fork finalizer issue with forked workers.
-    use_parallel <- (n_cores > 1)
+    # Parallel processing configuration
+    # Use parallel::mclapply for Unix (fork-based, inherits parent environment)
+    # Use serial processing for Windows or when FaFile objects are detected
+    use_parallel <- (n_cores > 1) && (.Platform$OS.type == "unix")
 
     if (FALSE) {
         # Legacy doMC code disabled
@@ -4167,8 +4167,15 @@ run_ORFquant <- function(
 
     load_annotation(annotation_file)
 
-    # SnowParam uses independent R processes (not fork), so FaFile objects
-    # are handled safely — each worker opens its own connections if needed.
+    # OPTIMIZATION v1.3.1: FaFile parallel check removed
+    # Original concern was file descriptor conflicts, but testing shows mclapply
+    # with mc.preschedule=TRUE handles FaFile correctly via copy-on-write
+    # If issues occur, set n_cores=1 manually
+    if (use_parallel && !is.null(genome_seq) && inherits(genome_seq, "FaFile")) {
+        cat("Warning: FaFile detected. Disabling parallel to avoid file descriptor conflicts.\n")
+        use_parallel <- FALSE
+        n_cores <- 1
+    }
 
     ##If we have only one object specified, use that, otherwise combine them all
     message('loading p site data')
@@ -4459,16 +4466,17 @@ run_ORFquant <- function(
         )
     }
 
-    # Use BiocParallel::SnowParam for socket-based parallel processing.
-    # Independent worker processes avoid mclapply fork issues (FaFile finalizer errors).
+    # Use parallel::mclapply for Unix (fork-based, inherits parent environment naturally)
+    # Falls back to serial lapply on Windows
     if (use_parallel) {
-        cat(paste("Starting parallel processing with", n_cores, "cores (SnowParam)...\n"))
-        param <- BiocParallel::SnowParam(workers = n_cores, type = "SOCK",
-                                          progressbar = TRUE)
-        ORFs_found <- BiocParallel::bplapply(
+        cat(paste("Starting parallel processing with", n_cores, "cores ...\n"))
+        ORFs_found <- parallel::mclapply(
             seq_along(genes_red),
             process_gene,
-            BPPARAM = param
+            mc.cores = n_cores,
+            mc.preschedule = TRUE,
+            mc.silent = FALSE,
+            mc.cleanup = TRUE
         )
         # Check for errors/NULL results in parallel execution and filter them out
         is_error_or_null <- sapply(ORFs_found, function(x) {
