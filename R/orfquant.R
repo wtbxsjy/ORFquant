@@ -4793,7 +4793,6 @@ load_annotation <- function(path) {
 }
 
 prepare_annotation_files <- function(
-
     annotation_directory,
     twobit_file = NULL,
     gtf_file,
