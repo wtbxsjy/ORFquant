@@ -4167,15 +4167,8 @@ run_ORFquant <- function(
 
     load_annotation(annotation_file)
 
-    # OPTIMIZATION v1.3.1: FaFile parallel check removed
-    # Original concern was file descriptor conflicts, but testing shows mclapply
-    # with mc.preschedule=TRUE handles FaFile correctly via copy-on-write
-    # If issues occur, set n_cores=1 manually
-    if (use_parallel && !is.null(genome_seq) && inherits(genome_seq, "FaFile")) {
-        cat("Warning: FaFile detected. Disabling parallel to avoid file descriptor conflicts.\n")
-        use_parallel <- FALSE
-        n_cores <- 1
-    }
+    # FaFile is pre-loaded to DNAStringSet in load_annotation — parallel fork safe.
+    # No special handling needed for FaFile objects at this point.
 
     ##If we have only one object specified, use that, otherwise combine them all
     message('loading p site data')
@@ -4787,6 +4780,13 @@ load_annotation <- function(path) {
         genome_sequence <- GTF_annotation$genome
     } else {
         genome_sequence <- NULL
+    }
+    # Pre-load FaFile to memory (DNAStringSet) for safe parallel fork processing.
+    # FaFile C-level file descriptors cause finalizer errors in forked mclapply workers.
+    # DNAStringSet is pure R data — no file handles, fully fork-safe.
+    if (inherits(genome_sequence, "FaFile")) {
+        genome_sequence <- getSeq(genome_sequence)
+        GTF_annotation$genome <- genome_sequence
     }
     GTF_annotation <<- GTF_annotation
     genome_seq <<- genome_sequence
