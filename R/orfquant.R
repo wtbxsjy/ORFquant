@@ -4174,6 +4174,10 @@ run_ORFquant <- function(
     if (use_parallel && !is.null(genome_seq) && inherits(genome_seq, "FaFile")) {
         cat("FaFile detected, pre-loading genome to memory for parallel processing...\n")
         genome_seq <- getSeq(genome_seq)
+        # Also replace FaFile in annotation to prevent finalizer errors in forked processes
+        if (!is.null(GTF_annotation) && inherits(GTF_annotation$genome, "FaFile")) {
+            GTF_annotation$genome <- genome_seq
+        }
         cat("Genome loaded to memory\n")
     }
 
