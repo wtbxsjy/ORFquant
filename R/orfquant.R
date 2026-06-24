@@ -1786,9 +1786,9 @@ select_quantify_ORFs <- function(
         splicings = df_orfs_ex,
         genes = df_genes
     ))
-    #disjointExons(orfann)
+    #exonicParts(orfann, linked.to.single.gene.only = FALSE)
 
-    exbin <- disjointExons(orfann)
+    exbin <- exonicParts(orfann, linked.to.single.gene.only = FALSE)
 
     d <- rep(0, length(exbin))
 
@@ -4171,12 +4171,10 @@ run_ORFquant <- function(
     # Original concern was file descriptor conflicts, but testing shows mclapply
     # with mc.preschedule=TRUE handles FaFile correctly via copy-on-write
     # If issues occur, set n_cores=1 manually
-    if (FALSE && use_parallel && is(genome_seq, "FaFile")) {
-        cat(
-            "Warning: FaFile detected. Disabling parallel processing to avoid file descriptor conflicts.\n"
-        )
-        use_parallel <- FALSE
-        n_cores <- 1
+    if (use_parallel && !is.null(genome_seq) && inherits(genome_seq, "FaFile")) {
+        cat("FaFile detected, pre-loading genome to memory for parallel processing...\n")
+        genome_seq <- getSeq(genome_seq)
+        cat("Genome loaded to memory\n")
     }
 
     ##If we have only one object specified, use that, otherwise combine them all
@@ -4781,18 +4779,19 @@ run_ORFquant <- function(
 
 load_annotation <- function(path) {
     GTF_annotation <- get(load(path))
-    if (is(GTF_annotation$genome, 'FaFile')) {
+    genome_pkg <- GTF_annotation$genome_package
+    if (!is.null(genome_pkg) && nchar(genome_pkg) > 0) {
+        library(genome_pkg, character.only = TRUE)
+        genome_sequence <- get(genome_pkg)
+    } else if (!is.null(GTF_annotation$genome)) {
         genome_sequence <- GTF_annotation$genome
     } else {
-        library(GTF_annotation$genome_package, character.only = TRUE)
-        genome_sequence <- get(GTF_annotation$genome_package)
+        genome_sequence <- NULL
     }
     GTF_annotation <<- GTF_annotation
     genome_seq <<- genome_sequence
 }
 
-
-prepare_annotation_files <- function(
     annotation_directory,
     twobit_file = NULL,
     gtf_file,
@@ -5130,7 +5129,7 @@ prepare_annotation_files <- function(
         intron_names_tx <- intronsByTranscript(annotation, use.names = TRUE)
 
         #define exonic bins, including regions overlapping multiple genes
-        nsns <- disjointExons(annotation, aggregateGenes = TRUE)
+        nsns <- exonicParts(annotation, linked.to.single.gene.only = FALSE)
 
         #define tx_coordinates of ORF boundaries
 
