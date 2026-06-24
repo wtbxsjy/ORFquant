@@ -4792,6 +4792,8 @@ load_annotation <- function(path) {
     genome_seq <<- genome_sequence
 }
 
+prepare_annotation_files <- function(
+
     annotation_directory,
     twobit_file = NULL,
     gtf_file,
