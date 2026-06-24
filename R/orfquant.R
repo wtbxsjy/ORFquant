@@ -4172,13 +4172,9 @@ run_ORFquant <- function(
     # with mc.preschedule=TRUE handles FaFile correctly via copy-on-write
     # If issues occur, set n_cores=1 manually
     if (use_parallel && !is.null(genome_seq) && inherits(genome_seq, "FaFile")) {
-        cat("FaFile detected, pre-loading genome to memory for parallel processing...\n")
-        genome_seq <- getSeq(genome_seq)
-        # Also replace FaFile in annotation to prevent finalizer errors in forked processes
-        if (!is.null(GTF_annotation) && inherits(GTF_annotation$genome, "FaFile")) {
-            GTF_annotation$genome <- genome_seq
-        }
-        cat("Genome loaded to memory\n")
+        cat("Warning: FaFile detected. Disabling parallel to avoid file descriptor conflicts.\n")
+        use_parallel <- FALSE
+        n_cores <- 1
     }
 
     ##If we have only one object specified, use that, otherwise combine them all
