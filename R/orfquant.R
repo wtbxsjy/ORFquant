@@ -4785,7 +4785,9 @@ load_annotation <- function(path) {
     # FaFile C-level file descriptors cause finalizer errors in forked mclapply workers.
     # DNAStringSet is pure R data — no file handles, fully fork-safe.
     if (inherits(genome_sequence, "FaFile")) {
+        orig_seqnames <- seqnames(seqinfo(genome_sequence))
         genome_sequence <- getSeq(genome_sequence)
+        names(genome_sequence) <- orig_seqnames  # restore short chromosome names
         GTF_annotation$genome <- genome_sequence
     }
     GTF_annotation <<- GTF_annotation
