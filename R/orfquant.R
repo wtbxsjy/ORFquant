@@ -4468,8 +4468,8 @@ run_ORFquant <- function(
             process_gene,
             mc.cores = n_cores,
             mc.preschedule = TRUE,
-            mc.silent = FALSE,
-            mc.cleanup = TRUE
+            mc.silent = TRUE,
+            mc.cleanup = FALSE
         )
         # Check for errors/NULL results in parallel execution and filter them out
         is_error_or_null <- sapply(ORFs_found, function(x) {
