@@ -4773,7 +4773,7 @@ run_ORFquant <- function(
 load_annotation <- function(path) {
     # Load into local environment to avoid creating global FaFile copy
     _env <- new.env(parent = emptyenv())
-    GTF_annotation <- get(load(path, envir = _env))
+    GTF_annotation <- get(load(path, envir = _env), envir = _env)
     genome_pkg <- GTF_annotation$genome_package
     if (!is.null(genome_pkg) && nchar(genome_pkg) > 0) {
         library(genome_pkg, character.only = TRUE)
