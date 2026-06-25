@@ -108,8 +108,7 @@ setMethod('getSeq','FaFile_Circ', function (x, ...){
                #shift these wrapped ranges back to 1
                wrapped_grs <- shift(wrapped_grs,-chrends_wrap)
                #make sure they don't wrap twice
-               if(any(end(wrapped_grs) > chrends_wrap)) stop("Ranges wrapping twice',
-                                                                         ' isn't implemented yet...")
+               if(any(end(wrapped_grs) > chrends_wrap)) stop("Ranges wrapping twice isn't implemented yet...")
                #also get the within bounds ranges
                nonwrapped_grs <- restrict(param,end=chrends)
                #scan seperately

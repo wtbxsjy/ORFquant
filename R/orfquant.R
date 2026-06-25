@@ -3990,6 +3990,8 @@ ORFquant <- function(
     region,
     for_ORFquant,
     genetic_code_region,
+    annotation = GTF_annotation,
+    genome_sequence = genome_seq,
     orf_find.all_starts = TRUE,
     orf_find.nostarts = FALSE,
     orf_find.start_sel_cutoff = NA,
@@ -4021,23 +4023,22 @@ ORFquant <- function(
             region = region,
             P_sites = P_sites_region,
             P_sites_uniq = P_sites_uniq_region,
-            annotation = GTF_annotation,
+            annotation = annotation,
             junction_counts = for_ORFquant$junctions,
             uniq_signal = unique_reads
         )
         if (length(selected_transcripts) > 0) {
             res_orfs <- suppressWarnings(detect_translated_orfs(
                 selected_txs = selected_transcripts,
-                genome_sequence = genome_seq,
-                annotation = GTF_annotation,
+                genome_sequence = genome_sequence,
+                annotation = annotation,
                 P_sites = P_sites_region,
                 P_sites_uniq = P_sites_uniq_region,
                 P_sites_uniq_mm = P_sites_uniq_mm_region,
                 genomic_region = region,
                 genetic_code = genetic_code_region,
                 all_starts = orf_find.all_starts,
-                nostarts = ,
-                orf_find.nostarts,
+                nostarts = orf_find.nostarts,
                 start_sel_cutoff = orf_find.start_sel_cutoff,
                 start_sel_cutoff_ave = orf_find.start_sel_cutoff_ave,
                 cutoff_fr_ave = orf_find.cutoff_fr_ave,
@@ -4058,8 +4059,8 @@ ORFquant <- function(
         if (length(res_orfs) > 0) {
             res_orfs <- annotate_ORFs(
                 results_ORFs = res_orfs,
-                Annotation = GTF_annotation,
-                genome_sequence = genome_seq,
+                Annotation = annotation,
+                genome_sequence = genome_sequence,
                 region = region,
                 genetic_code = genetic_code_region
             )
@@ -4068,8 +4069,8 @@ ORFquant <- function(
                 P_sites = P_sites_region,
                 P_sites_uniq = P_sites_uniq_region,
                 P_sites_uniq_mm = P_sites_uniq_mm_region,
-                genome_sequence = genome_seq,
-                annotation = GTF_annotation,
+                genome_sequence = genome_sequence,
+                annotation = annotation,
                 genetic_code_table = genetic_code_region,
                 cutoff_fr_ave = orf_find.cutoff_fr_ave,
                 uniq_signal = unique_reads
@@ -4079,6 +4080,76 @@ ORFquant <- function(
     }
 
     return(res_orfs)
+}
+
+.orfquant_genome_ref <- function(genome_sequence) {
+    if (!inherits(genome_sequence, "FaFile")) {
+        return(NULL)
+    }
+
+    genome_path <- tryCatch(
+        genome_sequence$path,
+        error = function(e) {
+            path(genome_sequence)
+        }
+    )
+    circular_ranges <- character()
+    if (inherits(genome_sequence, "FaFile_Circ")) {
+        circular_ranges <- genome_sequence$circularRanges
+    }
+
+    structure(
+        list(
+            type = "fasta",
+            path = normalizePath(genome_path, mustWork = FALSE),
+            circularRanges = circular_ranges
+        ),
+        class = "ORFquantGenomeRef"
+    )
+}
+
+.orfquant_open_genome_ref <- function(genome_ref) {
+    if (!inherits(genome_ref, "ORFquantGenomeRef") &&
+        !(is.list(genome_ref) && identical(genome_ref$type, "fasta"))) {
+        return(genome_ref)
+    }
+
+    genome_sequence <- Rsamtools::FaFile(genome_ref$path)
+    FaFile_Circ(genome_sequence, circularRanges = genome_ref$circularRanges)
+}
+
+.orfquant_close_genome <- function(genome_sequence) {
+    if (inherits(genome_sequence, "FaFile")) {
+        tryCatch(
+            {
+                if (isOpen(genome_sequence)) {
+                    close(genome_sequence)
+                }
+            },
+            error = function(e) NULL
+        )
+    }
+    invisible(NULL)
+}
+
+.orfquant_load_worker_namespaces <- function() {
+    invisible(lapply(
+        c(
+            "BiocGenerics",
+            "S4Vectors",
+            "IRanges",
+            "GenomicRanges",
+            "GenomicFeatures",
+            "GenomicAlignments",
+            "Biostrings",
+            "Rsamtools"
+        ),
+        function(pkg) {
+            suppressPackageStartupMessages(
+                require(pkg, character.only = TRUE, quietly = TRUE)
+            )
+        }
+    ))
 }
 
 #' Run the ORFquant pipeline
@@ -4108,6 +4179,7 @@ ORFquant <- function(
 #' @param stn.orf_quant.cutoff_P_sites \code{orf_quant.cutoff_P_sites} parameter for the \code{ORFquant} function
 #' @param unique_reads_only Use only signal from uniquely mapping reads? Defaults to \code{FALSE}.
 #' @param canonical_start_only Use only the canonical start codon (no alternative initiation codons)? Defaults to \code{TRUE}.
+#' @param parallel_backend Parallel backend to use. \code{"snow"} uses socket workers and avoids forked \code{FaFile} finalizer issues; \code{"fork"} is retained only for explicit legacy use on Unix.
 #' @return A set of output files containing transcript coordinates, exonic coordinates and annotation for each ORF, including optional GTF and protein fasta files.\cr\cr
 #' The description for each list object is as follows:\cr\cr
 #' \code{tmp_ORFquant_results}: (Optional) RData object file containing the entire set of results for each genomic region.\cr
@@ -4140,12 +4212,20 @@ run_ORFquant <- function(
     stn.orf_quant.cutoff_pct = 2,
     stn.orf_quant.cutoff_P_sites = NA,
     unique_reads_only = FALSE,
-    canonical_start_only = TRUE
+    canonical_start_only = TRUE,
+    parallel_backend = c("auto", "snow", "serial", "fork")
 ) {
-    # Parallel processing configuration
-    # Use parallel::mclapply for Unix (fork-based, inherits parent environment)
-    # Use serial processing for Windows or when FaFile objects are detected
-    use_parallel <- (n_cores > 1) && (.Platform$OS.type == "unix")
+    parallel_backend <- match.arg(parallel_backend)
+    if (parallel_backend == "auto") {
+        parallel_backend <- if (n_cores > 1) "snow" else "serial"
+    }
+    if (n_cores <= 1) {
+        parallel_backend <- "serial"
+    }
+
+    if (parallel_backend == "fork" && .Platform$OS.type != "unix") {
+        stop("parallel_backend = 'fork' is only available on Unix-like systems")
+    }
 
     if (FALSE) {
         # Legacy doMC code disabled
@@ -4415,12 +4495,12 @@ run_ORFquant <- function(
     # Define the worker function that processes a single gene region
     # All required variables are captured in the closure
     # Wrap in tryCatch to provide better error messages
-    process_gene <- function(g) {
+    process_gene <- function(g, annotation = GTF_annotation, genome_sequence = genome_seq) {
         tryCatch(
             {
                 gen_region <- genes_red[g]
-                genetcd <- GTF_annotation$genetic_codes$genetic_code[
-                    rownames(GTF_annotation$genetic_codes) ==
+                genetcd <- annotation$genetic_codes$genetic_code[
+                    rownames(annotation$genetic_codes) ==
                         as.character(seqnames(gen_region))
                 ]
                 genetcd <- getGeneticCode(genetcd)
@@ -4434,6 +4514,8 @@ run_ORFquant <- function(
                     region = gen_region,
                     for_ORFquant = for_ORFquant_data,
                     genetic_code_region = genetcd,
+                    annotation = annotation,
+                    genome_sequence = genome_sequence,
                     orf_find.all_starts = stn.orf_find.all_starts,
                     orf_find.nostarts = stn.orf_find.nostarts,
                     orf_find.start_sel_cutoff = stn.orf_find.start_sel_cutoff,
@@ -4459,40 +4541,94 @@ run_ORFquant <- function(
         )
     }
 
-    # Use parallel::mclapply for Unix (fork-based, inherits parent environment naturally)
-    # Falls back to serial lapply on Windows
-    if (use_parallel) {
-        cat(paste("Starting parallel processing with", n_cores, "cores ...\n"))
+    # Use socket workers by default to avoid forked FaFile finalizer errors.
+    if (parallel_backend == "snow") {
+        cat(paste("Starting socket parallel processing with", n_cores, "workers ...\n"))
+        genome_ref <- .orfquant_genome_ref(genome_seq)
+        worker_annotation <- GTF_annotation
+        worker_genome <- genome_seq
+        if (!is.null(genome_ref)) {
+            worker_annotation$genome_ref <- genome_ref
+            worker_annotation$genome <- NULL
+            GTF_annotation$genome_ref <- genome_ref
+            GTF_annotation$genome <- NULL
+            worker_genome <- NULL
+            genome_seq <- NULL
+        }
+        chunks <- split(
+            seq_along(genes_red),
+            cut(
+                seq_along(genes_red),
+                breaks = min(n_cores, length(genes_red)),
+                labels = FALSE
+            )
+        )
+        process_gene_chunk <- function(gene_indices) {
+            .orfquant_load_worker_namespaces()
+            annotation <- worker_annotation
+            genome_sequence <- if (!is.null(genome_ref)) {
+                .orfquant_open_genome_ref(genome_ref)
+            } else {
+                worker_genome
+            }
+            on.exit(.orfquant_close_genome(genome_sequence), add = TRUE)
+            lapply(gene_indices, process_gene,
+                annotation = annotation,
+                genome_sequence = genome_sequence
+            )
+        }
+        ORFs_found <- unlist(
+            BiocParallel::bplapply(
+                chunks,
+                process_gene_chunk,
+                BPPARAM = BiocParallel::SnowParam(
+                    workers = n_cores,
+                    type = "SOCK",
+                    progressbar = FALSE
+                )
+            ),
+            recursive = FALSE
+        )
+    } else if (parallel_backend == "fork") {
+        if (.Platform$OS.type != "unix") {
+            stop("parallel_backend = 'fork' is only available on Unix-like systems")
+        }
+        if (inherits(genome_seq, "FaFile")) {
+            warning(
+                "Fork parallelism with FaFile genomes can trigger finalizer errors; ",
+                "use parallel_backend = 'snow' instead."
+            )
+        }
+        cat(paste("Starting fork parallel processing with", n_cores, "cores ...\n"))
         ORFs_found <- parallel::mclapply(
             seq_along(genes_red),
             process_gene,
             mc.cores = n_cores,
             mc.preschedule = TRUE,
-            mc.silent = TRUE,
-            mc.cleanup = FALSE
+            mc.silent = TRUE
         )
-        # Check for errors/NULL results in parallel execution and filter them out
-        is_error_or_null <- sapply(ORFs_found, function(x) {
-            inherits(x, "try-error") ||
-                is.null(x) ||
-                (is.list(x) && length(x) == 0)
-        })
-        if (any(is_error_or_null)) {
-            n_errors <- sum(is_error_or_null)
-            n_success <- sum(!is_error_or_null)
-            cat(paste(
-                "Parallel processing: ",
-                n_success,
-                " successful, ",
-                n_errors,
-                " failed\n",
-                sep = ""
-            ))
-            # Remove error objects before proceeding
-            ORFs_found <- ORFs_found[!is_error_or_null]
-        }
     } else {
         ORFs_found <- lapply(seq_along(genes_red), process_gene)
+    }
+
+    # Check for errors/NULL results in parallel execution and filter them out
+    is_error_or_null <- sapply(ORFs_found, function(x) {
+        inherits(x, "try-error") ||
+            is.null(x) ||
+            (is.list(x) && length(x) == 0)
+    })
+    if (any(is_error_or_null)) {
+        n_errors <- sum(is_error_or_null)
+        n_success <- sum(!is_error_or_null)
+        cat(paste(
+            "ORFquant processing: ",
+            n_success,
+            " successful, ",
+            n_errors,
+            " failed\n",
+            sep = ""
+        ))
+        ORFs_found <- ORFs_found[!is_error_or_null]
     }
 
     cat(paste("Summoning ORFquant --- Done! ", date(), "\n", sep = ""))
@@ -4771,29 +4907,23 @@ run_ORFquant <- function(
 #' @export
 
 load_annotation <- function(path) {
-    # Load into local environment to avoid creating global FaFile copy
-    _env <- new.env(parent = emptyenv())
-    GTF_annotation <- get(load(path, envir = _env), envir = _env)
-    genome_pkg <- GTF_annotation$genome_package
+    load_env <- new.env(parent = emptyenv())
+    ann <- get(load(path, envir = load_env), envir = load_env)
+    genome_pkg <- ann$genome_package
     if (!is.null(genome_pkg) && nchar(genome_pkg) > 0) {
         library(genome_pkg, character.only = TRUE)
         genome_sequence <- get(genome_pkg)
-    } else if (!is.null(GTF_annotation$genome)) {
-        genome_sequence <- GTF_annotation$genome
+    } else if (!is.null(ann$genome)) {
+        genome_sequence <- ann$genome
     } else {
         genome_sequence <- NULL
     }
-    # Pre-load FaFile to memory (DNAStringSet) for safe parallel fork processing.
-    # FaFile C-level file descriptors cause finalizer errors in forked mclapply workers.
-    # DNAStringSet is pure R data — no file handles, fully fork-safe.
+
     if (inherits(genome_sequence, "FaFile")) {
-        orig_seqnames <- seqnames(seqinfo(genome_sequence))
-        genome_sequence <- getSeq(genome_sequence)
-        names(genome_sequence) <- orig_seqnames  # restore short chromosome names
-        GTF_annotation$genome <- genome_sequence
+        ann$genome_ref <- .orfquant_genome_ref(genome_sequence)
     }
-    GTF_annotation <<- GTF_annotation
-    genome_seq <<- genome_sequence
+    assign("GTF_annotation", ann,          envir = parent.frame())
+    assign("genome_seq",     genome_sequence, envir = parent.frame())
 }
 
 prepare_annotation_files <- function(
