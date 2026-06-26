@@ -4724,14 +4724,16 @@ run_ORFquant <- function(
 
     #toAdd - use the features unique to ORFs as confidence score
 
-    na_ps <- is.na(ORFs_tx$P_sites)
-    ORFs_tx$P_sites_pN <- NA
-    ORFs_tx$P_sites_pN[!na_ps] <- ORFs_tx$P_sites[!na_ps] /
-        (width(ORFs_tx)[!na_ps])
-    ORFs_tx$ORFs_pM <- NA
-    ORFs_tx$ORFs_pM[!na_ps] <- ORFs_tx$P_sites_pN[!na_ps] *
-        (1000000 / (sum(ORFs_tx$P_sites_pN[!na_ps])))
-    ORFs_tx$P_sites_pN <- NULL
+    if (length(ORFs_tx) > 0) {
+        na_ps <- is.na(ORFs_tx$P_sites)
+        ORFs_tx$P_sites_pN <- rep(NA_real_, length(ORFs_tx))
+        ORFs_tx$P_sites_pN[!na_ps] <- ORFs_tx$P_sites[!na_ps] /
+            (width(ORFs_tx)[!na_ps])
+        ORFs_tx$ORFs_pM <- rep(NA_real_, length(ORFs_tx))
+        ORFs_tx$ORFs_pM[!na_ps] <- ORFs_tx$P_sites_pN[!na_ps] *
+            (1000000 / (sum(ORFs_tx$P_sites_pN[!na_ps])))
+        ORFs_tx$P_sites_pN <- NULL
+    }
 
     ORFs_gen <- unlist(GRangesList(lapply(ORFs_found, function(x) {
         .safe_field(x, "ORFs_genomic_position")
