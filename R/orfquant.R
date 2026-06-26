@@ -4564,14 +4564,44 @@ run_ORFquant <- function(
             )
         )
         process_gene_chunk <- function(gene_indices) {
-            .orfquant_load_worker_namespaces()
+            # Load all required packages in the worker (inline — no external
+            # function calls so the closure is fully self-contained for
+            # SnowParam SOCK serialisation).
+            pkgs <- c(
+                "BiocGenerics", "S4Vectors", "IRanges", "GenomicRanges",
+                "GenomicFeatures", "GenomicAlignments", "Biostrings",
+                "Rsamtools", "ORFquant"
+            )
+            for (pkg in pkgs) {
+                suppressPackageStartupMessages(
+                    require(pkg, character.only = TRUE, quietly = TRUE)
+                )
+            }
+
             annotation <- worker_annotation
+
+            # Each worker opens its own FaFile copy so file descriptors are
+            # never shared across processes.
             genome_sequence <- if (!is.null(genome_ref)) {
-                .orfquant_open_genome_ref(genome_ref)
+                fa <- Rsamtools::FaFile(genome_ref$path)
+                if (length(genome_ref$circularRanges) > 0) {
+                    fa <- FaFile_Circ(fa,
+                        circularRanges = genome_ref$circularRanges)
+                }
+                fa
             } else {
                 worker_genome
             }
-            on.exit(.orfquant_close_genome(genome_sequence), add = TRUE)
+
+            on.exit({
+                if (inherits(genome_sequence, "FaFile")) {
+                    tryCatch({
+                        if (isOpen(genome_sequence))
+                            close(genome_sequence)
+                    }, error = function(e) NULL)
+                }
+            }, add = TRUE)
+
             lapply(gene_indices, process_gene,
                 annotation = annotation,
                 genome_sequence = genome_sequence
