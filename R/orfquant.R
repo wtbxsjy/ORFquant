@@ -4593,6 +4593,15 @@ run_ORFquant <- function(
                 worker_genome
             }
 
+            # Many ORFquant internal functions (select_txs, detect_translated_orfs,
+            # annotate_ORFs, quantify_ORFs, etc.) access GTF_annotation and
+            # genome_seq as global variables rather than through explicit arguments.
+            # Set them in the worker so all code paths resolve correctly.
+            assign("GTF_annotation", annotation,
+                   envir = .GlobalEnv)
+            assign("genome_seq", genome_sequence,
+                   envir = .GlobalEnv)
+
             on.exit({
                 if (inherits(genome_sequence, "FaFile")) {
                     tryCatch({
