@@ -4672,12 +4672,34 @@ run_ORFquant <- function(
         )
     }
 
+    # NULL-safe field extraction for ORF result lists.
+    # Some gene regions may produce results where specific slots are NULL
+    # (e.g. no genomic features, no splice features).  These helpers
+    # return an empty GRanges() instead of NULL so the downstream
+    # GRangesList / unlist pipeline does not fail.
+    .safe_field <- function(x, field) {
+        val <- x[[field]]
+        if (is.null(val)) return(GRanges())
+        val <- unlist(val)
+        if (is.null(val) || length(val) == 0) return(GRanges())
+        val
+    }
+    .safe_nested <- function(x, outer, inner) {
+        out <- x[[outer]]
+        if (is.null(out)) return(GRanges())
+        val <- out[[inner]]
+        if (is.null(val)) return(GRanges())
+        val <- unlist(val)
+        if (is.null(val) || length(val) == 0) return(GRanges())
+        val
+    }
+
     lens <- elementNROWS(ORFs_found)
 
     ORFs_found <- ORFs_found[lens > 0]
 
     ORFs_txs_feats <- unlist(GRangesList(lapply(ORFs_found, function(x) {
-        unlist(x$genomic_features)
+        .safe_field(x, "genomic_features")
     })))
     ORFs_txs_feats <- ORFs_txs_feats[
         !duplicated(mcols(ORFs_txs_feats)) | !duplicated(ORFs_txs_feats)
@@ -4688,12 +4710,12 @@ run_ORFquant <- function(
     lens <- elementNROWS(ORFs_found)
 
     ORFs_found <- ORFs_found[lens > 1]
-    ORFs_tx <- unlist(GRangesList(unlist(sapply(ORFs_found, function(x) {
-        unlist(x$ORFs_tx_position)
-    }))))
+    ORFs_tx <- unlist(GRangesList(lapply(ORFs_found, function(x) {
+        .safe_field(x, "ORFs_tx_position")
+    })))
 
-    ORFs_feat <- unlist(sapply(ORFs_found, function(x) {
-        unlist(x$selected_ORFs_features)
+    ORFs_feat <- unlist(lapply(ORFs_found, function(x) {
+        .safe_field(x, "selected_ORFs_features")
     }))
     ORFs_feat <- GRangesList(sapply(ORFs_feat, function(x) {
         x$X$tx_name <- NULL
@@ -4711,22 +4733,22 @@ run_ORFquant <- function(
         (1000000 / (sum(ORFs_tx$P_sites_pN[!na_ps])))
     ORFs_tx$P_sites_pN <- NULL
 
-    ORFs_gen <- unlist(GRangesList(sapply(ORFs_found, function(x) {
-        unlist(x$ORFs_genomic_position)
+    ORFs_gen <- unlist(GRangesList(lapply(ORFs_found, function(x) {
+        .safe_field(x, "ORFs_genomic_position")
     })))
 
-    ORFs_spl_feat_longest <- unlist(GRangesList(sapply(ORFs_found, function(x) {
-        unlist(x$ORFs_splice_feats$annotation_wrt_longest)
+    ORFs_spl_feat_longest <- unlist(GRangesList(lapply(ORFs_found, function(x) {
+        .safe_nested(x, "ORFs_splice_feats", "annotation_wrt_longest")
     })))
-    ORFs_spl_feat_maxORF <- unlist(GRangesList(sapply(ORFs_found, function(x) {
-        unlist(x$ORFs_splice_feats$annotation_wrt_maxORF)
+    ORFs_spl_feat_maxORF <- unlist(GRangesList(lapply(ORFs_found, function(x) {
+        .safe_nested(x, "ORFs_splice_feats", "annotation_wrt_maxORF")
     })))
-    ORFs_readthroughs <- unlist(GRangesList(unlist(sapply(
+    ORFs_readthroughs <- unlist(GRangesList(lapply(
         ORFs_found,
         function(x) {
-            unlist(x$readthrough)
+            .safe_field(x, "readthrough")
         }
-    ))))
+    )))
     if (length(ORFs_readthroughs) > 0) {
         ORFs_readthroughs <- ORFs_readthroughs[order(
             ORFs_readthroughs$P_sites_raw,
