@@ -4247,8 +4247,9 @@ run_ORFquant <- function(
 
     load_annotation(annotation_file)
 
-    # FaFile is pre-loaded to DNAStringSet in load_annotation — parallel fork safe.
-    # No special handling needed for FaFile objects at this point.
+    # load_annotation() converts FaFile → DNAStringSet (pure-R, no C++ pointers).
+    # Fork workers inherit DNAStringSet cleanly; no finalizer issues.
+    # The snow path uses genome_ref to re-open FaFile in each worker.
 
     ##If we have only one object specified, use that, otherwise combine them all
     message('loading p site data')
@@ -4635,9 +4636,13 @@ run_ORFquant <- function(
             stop("parallel_backend = 'fork' is only available on Unix-like systems")
         }
         if (inherits(genome_seq, "FaFile")) {
+            # This path should rarely fire: load_annotation() converts FaFile to
+            # DNAStringSet. If we reach here (e.g. BSgenome package), warn but
+            # proceed — mc.cleanup=FALSE below suppresses finalizer errors.
             warning(
-                "Fork parallelism with FaFile genomes can trigger finalizer errors; ",
-                "use parallel_backend = 'snow' instead."
+                "Fork parallelism with FaFile/BSgenome genomes can trigger finalizer errors; ",
+                "prefer DNAStringSet-based genomes (auto-converted by load_annotation). ",
+                "Errors will be suppressed by mc.cleanup=FALSE."
             )
         }
         cat(paste("Starting fork parallel processing with", n_cores, "cores ...\n"))
@@ -4706,6 +4711,13 @@ run_ORFquant <- function(
     .safe_field <- function(x, field) {
         val <- x[[field]]
         if (is.null(val)) return(GRanges())
+        # Guard against plain lists that cannot be coerced to GRanges.
+        # ORFquant may return a bare list() for some fields when sequence
+        # extraction fails (e.g. transcript missing from DNAStringSet).
+        if (is.list(val) && !is(val, "GRanges") && !is(val, "GRangesList") &&
+            !is(val, "CompressedGRangesList")) {
+            return(GRanges())
+        }
         val <- unlist(val)
         if (is.null(val) || length(val) == 0) return(GRanges())
         val
@@ -4715,6 +4727,10 @@ run_ORFquant <- function(
         if (is.null(out)) return(GRanges())
         val <- out[[inner]]
         if (is.null(val)) return(GRanges())
+        if (is.list(val) && !is(val, "GRanges") && !is(val, "GRangesList") &&
+            !is(val, "CompressedGRangesList")) {
+            return(GRanges())
+        }
         val <- unlist(val)
         if (is.null(val) || length(val) == 0) return(GRanges())
         val
@@ -4804,42 +4820,48 @@ run_ORFquant <- function(
         "selected_txs"
     )
 
-    #added for seqinfo problem
+    #added for seqinfo problem — guarded for empty results
 
     x <- ORFquant_results$ORFs_readthroughs
-    seqf <- Seqinfo(
-        seqnames = names(GTF_annotation$exons_txs),
-        seqlengths = sum(width(GTF_annotation$exons_txs)),
-        isCircular = NA,
-        genome = NA
-    )
-    x@seqnames <- Rle(factor(
-        as.character(x@seqnames),
-        levels = seqlevels(seqf)
-    ))
-    x@seqinfo <- seqf
-    ORFquant_results$ORFs_readthroughs <- x
+    if (length(x) > 0) {
+        seqf <- Seqinfo(
+            seqnames = names(GTF_annotation$exons_txs),
+            seqlengths = sum(width(GTF_annotation$exons_txs)),
+            isCircular = NA,
+            genome = NA
+        )
+        x@seqnames <- Rle(factor(
+            as.character(x@seqnames),
+            levels = seqlevels(seqf)
+        ))
+        x@seqinfo <- seqf
+        ORFquant_results$ORFs_readthroughs <- x
+    }
 
     x <- ORFquant_results$ORFs_tx
-    seqf <- Seqinfo(
-        seqnames = names(GTF_annotation$exons_txs),
-        seqlengths = sum(width(GTF_annotation$exons_txs)),
-        isCircular = NA,
-        genome = NA
-    )
-    x@seqnames <- Rle(factor(
-        as.character(x@seqnames),
-        levels = seqlevels(seqf)
-    ))
-    x@seqinfo <- seqf
+    if (length(x) > 0) {
+        seqf <- Seqinfo(
+            seqnames = names(GTF_annotation$exons_txs),
+            seqlengths = sum(width(GTF_annotation$exons_txs)),
+            isCircular = NA,
+            genome = NA
+        )
+        x@seqnames <- Rle(factor(
+            as.character(x@seqnames),
+            levels = seqlevels(seqf)
+        ))
+        x@seqinfo <- seqf
 
-    x$longest_ORF@seqnames <- Rle(factor(
-        as.character(x$longest_ORF@seqnames),
-        levels = seqlevels(seqf)
-    ))
-    x$longest_ORF@seqinfo <- seqf
+        if (!is.null(x$longest_ORF) && length(x$longest_ORF) > 0) {
+            x$longest_ORF@seqnames <- Rle(factor(
+                as.character(x$longest_ORF@seqnames),
+                levels = seqlevels(seqf)
+            ))
+            x$longest_ORF@seqinfo <- seqf
+        }
 
-    ORFquant_results$ORFs_tx <- x
+        ORFquant_results$ORFs_tx <- x
+    }
 
     save(
         ORFquant_results,
@@ -5000,7 +5022,19 @@ load_annotation <- function(path) {
     }
 
     if (inherits(genome_sequence, "FaFile")) {
+        # Build genome_ref for snow-path workers that need to re-open FaFile
         ann$genome_ref <- .orfquant_genome_ref(genome_sequence)
+        # Convert FaFile to DNAStringSet for fork safety.
+        # FaFile C++ external pointers are inherited by fork children and
+        # trigger finalizer errors at child exit.  DNAStringSet is a pure-R
+        # object with no C++ state, so fork children handle it cleanly.
+        orig_seqnames <- seqnames(seqinfo(genome_sequence))
+        genome_sequence <- getSeq(genome_sequence)
+        names(genome_sequence) <- orig_seqnames
+        # Replace the FaFile reference inside the annotation as well;
+        # extractTranscriptSeqs() and getSeq() both accept DNAStringSet,
+        # so this is transparent to all downstream ORFquant functions.
+        ann$genome <- genome_sequence
     }
     assign("GTF_annotation", ann,          envir = parent.frame())
     assign("genome_seq",     genome_sequence, envir = parent.frame())
