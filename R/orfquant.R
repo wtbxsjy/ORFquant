@@ -4638,8 +4638,6 @@ run_ORFquant <- function(
                             region = gen_region,
                             for_ORFquant = for_ORFquant_data,
                             genetic_code_region = genetcd,
-                            annotation = GTF_annotation,
-                            genome_sequence = genome_seq,
                             orf_find.all_starts = stn.orf_find.all_starts,
                             orf_find.nostarts = stn.orf_find.nostarts,
                             orf_find.start_sel_cutoff = stn.orf_find.start_sel_cutoff,
