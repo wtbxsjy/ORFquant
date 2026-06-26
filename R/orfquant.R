@@ -4528,15 +4528,14 @@ run_ORFquant <- function(
                 )
             },
             error = function(e) {
-                # Return NULL on error to allow processing to continue
-                # Error details will be logged
-                message(paste(
-                    "Error processing gene",
-                    g,
-                    ":",
-                    conditionMessage(e)
-                ))
-                return(NULL)
+                # Return error info as a list so the master process
+                # can inspect failures from SnowParam SOCK workers
+                # where message() output is not captured.
+                structure(
+                    list(error_msg = conditionMessage(e),
+                         gene_idx = g),
+                    class = "orfquant_gene_error"
+                )
             }
         )
     }
@@ -4611,10 +4610,23 @@ run_ORFquant <- function(
                 }
             }, add = TRUE)
 
-            lapply(gene_indices, process_gene,
-                annotation = annotation,
-                genome_sequence = genome_sequence
-            )
+            lapply(gene_indices, function(idx) {
+                res <- tryCatch(
+                    process_gene(idx,
+                        annotation = annotation,
+                        genome_sequence = genome_sequence
+                    ),
+                    error = function(e) {
+                        # Return error text so the master can see what failed
+                        structure(
+                            list(error = conditionMessage(e),
+                                 gene = idx),
+                            class = "orfquant_gene_error"
+                        )
+                    }
+                )
+                res
+            })
         }
         ORFs_found <- unlist(
             BiocParallel::bplapply(
@@ -4653,6 +4665,7 @@ run_ORFquant <- function(
     # Check for errors/NULL results in parallel execution and filter them out
     is_error_or_null <- sapply(ORFs_found, function(x) {
         inherits(x, "try-error") ||
+            inherits(x, "orfquant_gene_error") ||
             is.null(x) ||
             (is.list(x) && length(x) == 0)
     })
@@ -4667,6 +4680,19 @@ run_ORFquant <- function(
             " failed\n",
             sep = ""
         ))
+        # Report first few error details from gene failures
+        error_msgs <- ORFs_found[is_error_or_null]
+        for (i in seq_len(min(3, length(error_msgs)))) {
+            x <- error_msgs[[i]]
+            if (inherits(x, "orfquant_gene_error")) {
+                cat(sprintf(
+                    "  gene %s: %s\n",
+                    x$gene_idx, x$error_msg
+                ))
+            } else if (inherits(x, "try-error")) {
+                cat(sprintf("  element %d: %s\n", i, conditionMessage(x)))
+            }
+        }
         ORFs_found <- ORFs_found[!is_error_or_null]
     }
 
