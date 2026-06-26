@@ -4217,7 +4217,7 @@ run_ORFquant <- function(
 ) {
     parallel_backend <- match.arg(parallel_backend)
     if (parallel_backend == "auto") {
-        parallel_backend <- if (n_cores > 1) "snow" else "serial"
+        parallel_backend <- if (n_cores > 1) "fork" else "serial"
     }
     if (n_cores <= 1) {
         parallel_backend <- "serial"
@@ -4646,7 +4646,8 @@ run_ORFquant <- function(
             process_gene,
             mc.cores = n_cores,
             mc.preschedule = TRUE,
-            mc.silent = TRUE
+            mc.silent = TRUE,
+            mc.cleanup = FALSE
         )
     } else {
         ORFs_found <- lapply(seq_along(genes_red), process_gene)
