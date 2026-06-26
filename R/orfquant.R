@@ -4563,6 +4563,11 @@ run_ORFquant <- function(
             )
         )
         process_gene_chunk <- function(gene_indices) {
+            # SnowParam SOCK workers start with the default .libPaths(),
+            # which points to the container's built-in library (old ORFquant).
+            # Ensure the updated ORFquant from /tmp/Rlib is loaded first.
+            .libPaths(c("/tmp/Rlib", .libPaths()))
+
             # Load all required packages in the worker (inline — no external
             # function calls so the closure is fully self-contained for
             # SnowParam SOCK serialisation).
