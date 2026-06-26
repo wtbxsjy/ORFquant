@@ -4610,23 +4610,12 @@ run_ORFquant <- function(
                 }
             }, add = TRUE)
 
-            lapply(gene_indices, function(idx) {
-                res <- tryCatch(
-                    process_gene(idx,
-                        annotation = annotation,
-                        genome_sequence = genome_sequence
-                    ),
-                    error = function(e) {
-                        # Return error text so the master can see what failed
-                        structure(
-                            list(error = conditionMessage(e),
-                                 gene = idx),
-                            class = "orfquant_gene_error"
-                        )
-                    }
-                )
-                res
-            })
+            # process_gene is captured from the master closure but its
+            # formal-parameter signature may not survive SnowParam
+            # serialisation intact.  Rely on the global GTF_annotation /
+            # genome_seq that were assigned above — they match the
+            # defaults of process_gene() exactly.
+            lapply(gene_indices, process_gene)
         }
         ORFs_found <- unlist(
             BiocParallel::bplapply(
