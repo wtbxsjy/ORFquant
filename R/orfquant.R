@@ -4514,8 +4514,6 @@ run_ORFquant <- function(
                     region = gen_region,
                     for_ORFquant = for_ORFquant_data,
                     genetic_code_region = genetcd,
-                    annotation = annotation,
-                    genome_sequence = genome_sequence,
                     orf_find.all_starts = stn.orf_find.all_starts,
                     orf_find.nostarts = stn.orf_find.nostarts,
                     orf_find.start_sel_cutoff = stn.orf_find.start_sel_cutoff,
@@ -4615,51 +4613,10 @@ run_ORFquant <- function(
                 }
             }, add = TRUE)
 
-            # Define process_gene locally inside the chunk so SnowParam
-            # serialisation does not corrupt its formal parameter list.
-            # The body is identical to the outer process_gene() but uses
-            # the locally-scoped annotation / genome_sequence / globals.
-            worker_process_gene <- function(g) {
-                tryCatch(
-                    {
-                        gen_region <- genes_red[g]
-                        genetcd <- GTF_annotation$genetic_codes$genetic_code[
-                            rownames(GTF_annotation$genetic_codes) ==
-                                as.character(seqnames(gen_region))
-                        ]
-                        genetcd <- getGeneticCode(genetcd)
-                        if (canonical_start_only) {
-                            attributes(genetcd)$alt_init_codons <- names(
-                                which(genetcd == "M")
-                            )
-                        }
-
-                        ORFquant(
-                            region = gen_region,
-                            for_ORFquant = for_ORFquant_data,
-                            genetic_code_region = genetcd,
-                            orf_find.all_starts = stn.orf_find.all_starts,
-                            orf_find.nostarts = stn.orf_find.nostarts,
-                            orf_find.start_sel_cutoff = stn.orf_find.start_sel_cutoff,
-                            orf_find.start_sel_cutoff_ave = stn.orf_find.start_sel_cutoff_ave,
-                            orf_find.cutoff_fr_ave = stn.orf_find.cutoff_fr_ave,
-                            orf_quant.cutoff_cums = stn.orf_quant.cutoff_cums,
-                            orf_quant.cutoff_pct = stn.orf_quant.cutoff_pct,
-                            orf_quant.cutoff_P_sites = stn.orf_quant.cutoff_P_sites,
-                            unique_reads = unique_reads_only
-                        )
-                    },
-                    error = function(e) {
-                        structure(
-                            list(error_msg = conditionMessage(e),
-                                 gene_idx = g),
-                            class = "orfquant_gene_error"
-                        )
-                    }
-                )
-            }
-
-            lapply(gene_indices, worker_process_gene)
+            # We rely on the global GTF_annotation / genome_seq that were
+            # assigned above.  process_gene() picks them up via its default
+            # arguments, and ORFquant() accesses them as package globals.
+            lapply(gene_indices, process_gene)
         }
         ORFs_found <- unlist(
             BiocParallel::bplapply(
