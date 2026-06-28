@@ -4869,6 +4869,11 @@ run_ORFquant <- function(
     )
 
     if (write_GTF_file) {
+        # Guard against empty results: ORFs_tx and selected_txs may be
+        # empty when no transcript-level ORFs were detected (genomic-only).
+        if (length(ORFs_tx) == 0 || length(selected_txs) == 0) {
+            cat(paste("No ORFs to write to GTF, skipping. ", date(), "\n", sep = ""))
+        } else {
         map_tx_genes <- mcols(ORFs_tx)[, c(
             "ORF_id_tr",
             "gene_id",
@@ -4955,7 +4960,15 @@ run_ORFquant <- function(
         map_tx_genes <- GTF_annotation$trann
         #ORFs_gen$transcript_id<-names(ORFs_gen)
         ORFs_gen$type = "CDS"
-        exs_gtf <- unlist(GTF_annotation$exons_txs[selected_txs])
+        # Filter selected_txs to only include transcripts present in the
+        # annotation.  ORF results may reference transcript IDs from
+        # different annotation versions or isoforms not in exons_txs.
+        valid_txs <- intersect(selected_txs, names(GTF_annotation$exons_txs))
+        if (length(valid_txs) == 0) {
+            cat(paste("No valid transcripts for GTF export, skipping. ",
+                       date(), "\n", sep = ""))
+        } else {
+        exs_gtf <- unlist(GTF_annotation$exons_txs[valid_txs])
         mcols(exs_gtf) <- NULL
         exs_gtf$transcript_id <- names(exs_gtf)
         exs_gtf$transcript_biotype <- map_tx_genes[
@@ -4986,6 +4999,8 @@ run_ORFquant <- function(
             object = all,
             con = paste(prefix, "Detected_ORFs.gtf", sep = "_")
         ))
+        } # end else (valid_txs non-empty)
+        } # end else (ORFs_tx/selected_txs non-empty)
     }
 
     if (interactive) {
@@ -5022,19 +5037,20 @@ load_annotation <- function(path) {
     }
 
     if (inherits(genome_sequence, "FaFile")) {
-        # Build genome_ref for snow-path workers that need to re-open FaFile
+        # Legacy _Rannot files (pre-2026-06-27) store FaFile with C++
+        # external pointers.  Convert to DNAStringSet for fork safety.
+        # New annotations saved by the updated prepare_annotation_files()
+        # already contain DNAStringSet, so this branch only runs on old data.
         ann$genome_ref <- .orfquant_genome_ref(genome_sequence)
-        # Convert FaFile to DNAStringSet for fork safety.
-        # FaFile C++ external pointers are inherited by fork children and
-        # trigger finalizer errors at child exit.  DNAStringSet is a pure-R
-        # object with no C++ state, so fork children handle it cleanly.
         orig_seqnames <- seqnames(seqinfo(genome_sequence))
         genome_sequence <- getSeq(genome_sequence)
         names(genome_sequence) <- orig_seqnames
-        # Replace the FaFile reference inside the annotation as well;
-        # extractTranscriptSeqs() and getSeq() both accept DNAStringSet,
-        # so this is transparent to all downstream ORFquant functions.
         ann$genome <- genome_sequence
+        # Clear load_env which still holds the original FaFile via the
+        # unmodified copy of the annotation list (R copy-on-modify).
+        suppressWarnings(
+            rm(list = ls(load_env, all.names = TRUE), envir = load_env)
+        )
     }
     assign("GTF_annotation", ann,          envir = parent.frame())
     assign("genome_seq",     genome_sequence, envir = parent.frame())
@@ -5797,7 +5813,15 @@ prepare_annotation_files <- function(
 
         #put in a list
         pkgnm_or_faob <- if (is(genome_seq, 'FaFile')) {
-            genome_seq
+            # Convert FaFile to DNAStringSet BEFORE storing in the RData.
+            # FaFile C++ external pointers cause finalizer crashes in fork
+            # children (mclapply).  DNAStringSet is a pure-R object with
+            # no C++ state — safe for fork, and all downstream functions
+            # (extractTranscriptSeqs, getSeq) accept it transparently.
+            orig_seqnames <- seqnames(seqinfo(genome_seq))
+            genome_dnass <- getSeq(genome_seq)
+            names(genome_dnass) <- orig_seqnames
+            genome_dnass
         } else {
             pkgnm
         }
