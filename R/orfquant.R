@@ -5039,8 +5039,6 @@ load_annotation <- function(path) {
     if (inherits(genome_sequence, "FaFile")) {
         # Legacy _Rannot files (pre-2026-06-27) store FaFile with C++
         # external pointers.  Convert to DNAStringSet for fork safety.
-        # New annotations saved by the updated prepare_annotation_files()
-        # already contain DNAStringSet, so this branch only runs on old data.
         ann$genome_ref <- .orfquant_genome_ref(genome_sequence)
         orig_seqnames <- seqnames(seqinfo(genome_sequence))
         genome_sequence <- getSeq(genome_sequence)
@@ -5052,6 +5050,7 @@ load_annotation <- function(path) {
             rm(list = ls(load_env, all.names = TRUE), envir = load_env)
         )
     }
+
     assign("GTF_annotation", ann,          envir = parent.frame())
     assign("genome_seq",     genome_sequence, envir = parent.frame())
 }
