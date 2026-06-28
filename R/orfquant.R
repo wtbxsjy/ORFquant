@@ -5292,10 +5292,10 @@ prepare_annotation_files <- function(
 
         seqinfo_genome <- seqinfotwob
     } else {
-        if (!is(genome_seq, 'FaFile')) {
+        if (!inherits(genome_seq, 'FaFile')) {
             genome_seq <- Rsamtools::FaFile(genome_seq)
         }
-        if (!is(genome_seq, 'FaFile_Circ')) {
+        if (!inherits(genome_seq, 'FaFile_Circ')) {
             genome_seq <- FaFile_Circ(genome_seq, circularRanges = circ_chroms)
         }
         seqinfo_genome <- seqinfo(genome_seq)
@@ -5824,7 +5824,7 @@ prepare_annotation_files <- function(
             0
 
         #put in a list
-        pkgnm_or_faob <- if (is(genome_seq, 'FaFile')) {
+        pkgnm_or_faob <- if (inherits(genome_seq, 'FaFile')) {
             # Convert FaFile to DNAStringSet BEFORE storing in the RData.
             # FaFile C++ external pointers cause finalizer crashes in fork
             # children (mclapply).  DNAStringSet is a pure-R object with
