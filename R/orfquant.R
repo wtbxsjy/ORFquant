@@ -5064,8 +5064,8 @@ load_annotation <- function(path) {
         )
     }
 
-    assign("GTF_annotation", ann,          envir = parent.frame())
-    assign("genome_seq",     genome_sequence, envir = parent.frame())
+    assign("GTF_annotation", ann,          envir = .GlobalEnv)
+    assign("genome_seq",     genome_sequence, envir = .GlobalEnv)
 }
 
 prepare_annotation_files <- function(
