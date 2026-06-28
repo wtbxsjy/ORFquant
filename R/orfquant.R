@@ -1790,6 +1790,19 @@ select_quantify_ORFs <- function(
 
     exbin <- exonicParts(orfann, linked.to.single.gene.only = FALSE)
 
+    # Clean up the per-gene TxDb SQLite connection.
+    # makeTxDb() creates a SQLite-backed object whose connection would
+    # otherwise leak in fork children, causing DBI::dbDisconnect() warnings.
+    # Explicitly disconnecting here eliminates those warnings entirely.
+    # (The TxDb R-level finalizer may still fire in children, but without
+    # an active SQLite handle the error is cosmetic — no data corruption.)
+    tryCatch({
+        conn <- AnnotationDbi::dbconn(orfann)
+        if (!is.null(conn)) {
+            DBI::dbDisconnect(conn)
+        }
+    }, error = function(e) NULL)
+
     d <- rep(0, length(exbin))
 
     hts <- findOverlaps(exbin, P_sites, ignore.strand = FALSE)
