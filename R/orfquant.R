@@ -4884,8 +4884,22 @@ run_ORFquant <- function(
     if (write_GTF_file) {
         # Guard against empty results: ORFs_tx and selected_txs may be
         # empty when no transcript-level ORFs were detected (genomic-only).
+        # In that case, still export a valid GTF from ORFs_gen alone so
+        # downstream tools (ORF_QC) can detect ORFquant output.
+        ORFs_gen$type = "CDS"
+
         if (length(ORFs_tx) == 0 || length(selected_txs) == 0) {
-            cat(paste("No ORFs to write to GTF, skipping. ", date(), "\n", sep = ""))
+            # Genomic-only ORFs: write GTF from ORFs_gen directly so
+            # downstream tools (ORF_QC) can detect ORFquant output.
+            cat(paste("No transcript-level ORFs, exporting genomic-only GTF. ",
+                       date(), "\n", sep = ""))
+            all <- sort(ORFs_gen)
+            all$`source` <- "ORFquant"
+            names(all) <- NULL
+            suppressWarnings(export.gff2(
+                object = all,
+                con = paste(prefix, "Detected_ORFs.gtf", sep = "_")
+            ))
         } else {
         map_tx_genes <- mcols(ORFs_tx)[, c(
             "ORF_id_tr",
