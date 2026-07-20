@@ -4192,7 +4192,7 @@ ORFquant <- function(
 #' @param stn.orf_quant.cutoff_P_sites \code{orf_quant.cutoff_P_sites} parameter for the \code{ORFquant} function
 #' @param unique_reads_only Use only signal from uniquely mapping reads? Defaults to \code{FALSE}.
 #' @param canonical_start_only Use only the canonical start codon (no alternative initiation codons)? Defaults to \code{TRUE}.
-#' @param parallel_backend Parallel backend to use. \code{"snow"} uses socket workers and avoids forked \code{FaFile} finalizer issues; \code{"fork"} is retained only for explicit legacy use on Unix.
+#' @param parallel_backend Parallel backend to use. \code{"mclapply"} uses fork-based parallelism (Unix only); \code{"mirai"} uses mirai daemons with disk-load strategy to avoid forked \code{FaFile} finalizer issues.
 #' @return A set of output files containing transcript coordinates, exonic coordinates and annotation for each ORF, including optional GTF and protein fasta files.\cr\cr
 #' The description for each list object is as follows:\cr\cr
 #' \code{tmp_ORFquant_results}: (Optional) RData object file containing the entire set of results for each genomic region.\cr
@@ -4226,19 +4226,15 @@ run_ORFquant <- function(
     stn.orf_quant.cutoff_P_sites = NA,
     unique_reads_only = FALSE,
     canonical_start_only = TRUE,
-    parallel_backend = c("auto", "snow", "serial", "fork")
+    parallel_backend = c("mclapply", "mirai")
 ) {
+    # Parallel processing configuration
+    #   "mclapply" — fork-based (Unix only, inherits parent env)
+    #   "mirai"    — mirai daemons (socket-based independent processes via
+    #                 NNG/nanonext; disk-load strategy; no fork, no GC issues;
+    #                 requires mirai package)
     parallel_backend <- match.arg(parallel_backend)
-    if (parallel_backend == "auto") {
-        parallel_backend <- if (n_cores > 1) "fork" else "serial"
-    }
-    if (n_cores <= 1) {
-        parallel_backend <- "serial"
-    }
-
-    if (parallel_backend == "fork" && .Platform$OS.type != "unix") {
-        stop("parallel_backend = 'fork' is only available on Unix-like systems")
-    }
+    use_parallel <- (n_cores > 1) && (.Platform$OS.type == "unix")
 
     if (FALSE) {
         # Legacy doMC code disabled
@@ -4261,8 +4257,7 @@ run_ORFquant <- function(
     load_annotation(annotation_file)
 
     # load_annotation() converts FaFile → DNAStringSet (pure-R, no C++ pointers).
-    # Fork workers inherit DNAStringSet cleanly; no finalizer issues.
-    # The snow path uses genome_ref to re-open FaFile in each worker.
+    # Fork workers inherit DNAStringSet cleanly; mirai daemons load independently.
 
     ##If we have only one object specified, use that, otherwise combine them all
     message('loading p site data')
@@ -4540,9 +4535,8 @@ run_ORFquant <- function(
                 )
             },
             error = function(e) {
-                # Return error info as a list so the master process
-                # can inspect failures from SnowParam SOCK workers
-                # where message() output is not captured.
+                # Return error info as a structured object so the master
+                # process can inspect and report failures from all backends.
                 structure(
                     list(error_msg = conditionMessage(e),
                          gene_idx = g),
@@ -4552,112 +4546,29 @@ run_ORFquant <- function(
         )
     }
 
-    # Use socket workers by default to avoid forked FaFile finalizer errors.
-    if (parallel_backend == "snow") {
-        cat(paste("Starting socket parallel processing with", n_cores, "workers ...\n"))
-        genome_ref <- .orfquant_genome_ref(genome_seq)
-        worker_annotation <- GTF_annotation
-        worker_genome <- genome_seq
-        if (!is.null(genome_ref)) {
-            worker_annotation$genome_ref <- genome_ref
-            worker_annotation$genome <- NULL
-            GTF_annotation$genome_ref <- genome_ref
-            GTF_annotation$genome <- NULL
-            worker_genome <- NULL
-            genome_seq <- NULL
-        }
-        chunks <- split(
-            seq_along(genes_red),
-            cut(
-                seq_along(genes_red),
-                breaks = min(n_cores, length(genes_red)),
-                labels = FALSE
-            )
+    # Parallel dispatch: support both mclapply (fork) and mirai (socket daemon)
+    if (use_parallel && parallel_backend == "mirai") {
+        cat(paste("Starting mirai parallel processing with", n_cores, "cores ...\n"))
+        ORFs_found <- orfquant_mirai_parallel(
+            genes_red = genes_red,
+            for_ORFquant_data = for_ORFquant_data,
+            GTF_annotation = GTF_annotation,
+            genome_seq = genome_seq,
+            for_ORFquant_file = for_ORFquant_file,
+            annotation_file = annotation_file,
+            n_cores = n_cores,
+            canonical_start_only = canonical_start_only,
+            stn.orf_find.all_starts = stn.orf_find.all_starts,
+            stn.orf_find.nostarts = stn.orf_find.nostarts,
+            stn.orf_find.start_sel_cutoff = stn.orf_find.start_sel_cutoff,
+            stn.orf_find.start_sel_cutoff_ave = stn.orf_find.start_sel_cutoff_ave,
+            stn.orf_find.cutoff_fr_ave = stn.orf_find.cutoff_fr_ave,
+            stn.orf_quant.cutoff_cums = stn.orf_quant.cutoff_cums,
+            stn.orf_quant.cutoff_pct = stn.orf_quant.cutoff_pct,
+            stn.orf_quant.cutoff_P_sites = stn.orf_quant.cutoff_P_sites,
+            unique_reads_only = unique_reads_only
         )
-        process_gene_chunk <- function(gene_indices) {
-            # SnowParam SOCK workers start with the default .libPaths(),
-            # which points to the container's built-in library (old ORFquant).
-            # Ensure the updated ORFquant from /tmp/Rlib is loaded first.
-            .libPaths(c("/tmp/Rlib", .libPaths()))
-
-            # Load all required packages in the worker (inline — no external
-            # function calls so the closure is fully self-contained for
-            # SnowParam SOCK serialisation).
-            pkgs <- c(
-                "BiocGenerics", "S4Vectors", "IRanges", "GenomicRanges",
-                "GenomicFeatures", "GenomicAlignments", "Biostrings",
-                "Rsamtools", "ORFquant"
-            )
-            for (pkg in pkgs) {
-                suppressPackageStartupMessages(
-                    require(pkg, character.only = TRUE, quietly = TRUE)
-                )
-            }
-
-            annotation <- worker_annotation
-
-            # Each worker opens its own FaFile copy so file descriptors are
-            # never shared across processes.
-            genome_sequence <- if (!is.null(genome_ref)) {
-                fa <- Rsamtools::FaFile(genome_ref$path)
-                if (length(genome_ref$circularRanges) > 0) {
-                    fa <- FaFile_Circ(fa,
-                        circularRanges = genome_ref$circularRanges)
-                }
-                fa
-            } else {
-                worker_genome
-            }
-
-            # Many ORFquant internal functions (select_txs, detect_translated_orfs,
-            # annotate_ORFs, quantify_ORFs, etc.) access GTF_annotation and
-            # genome_seq as global variables rather than through explicit arguments.
-            # Set them in the worker so all code paths resolve correctly.
-            assign("GTF_annotation", annotation,
-                   envir = .GlobalEnv)
-            assign("genome_seq", genome_sequence,
-                   envir = .GlobalEnv)
-
-            on.exit({
-                if (inherits(genome_sequence, "FaFile")) {
-                    tryCatch({
-                        if (isOpen(genome_sequence))
-                            close(genome_sequence)
-                    }, error = function(e) NULL)
-                }
-            }, add = TRUE)
-
-            # We rely on the global GTF_annotation / genome_seq that were
-            # assigned above.  process_gene() picks them up via its default
-            # arguments, and ORFquant() accesses them as package globals.
-            lapply(gene_indices, process_gene)
-        }
-        ORFs_found <- unlist(
-            BiocParallel::bplapply(
-                chunks,
-                process_gene_chunk,
-                BPPARAM = BiocParallel::SnowParam(
-                    workers = n_cores,
-                    type = "SOCK",
-                    progressbar = FALSE
-                )
-            ),
-            recursive = FALSE
-        )
-    } else if (parallel_backend == "fork") {
-        if (.Platform$OS.type != "unix") {
-            stop("parallel_backend = 'fork' is only available on Unix-like systems")
-        }
-        if (inherits(genome_seq, "FaFile")) {
-            # This path should rarely fire: load_annotation() converts FaFile to
-            # DNAStringSet. If we reach here (e.g. BSgenome package), warn but
-            # proceed — mc.cleanup=FALSE below suppresses finalizer errors.
-            warning(
-                "Fork parallelism with FaFile/BSgenome genomes can trigger finalizer errors; ",
-                "prefer DNAStringSet-based genomes (auto-converted by load_annotation). ",
-                "Errors will be suppressed by mc.cleanup=FALSE."
-            )
-        }
+    } else if (use_parallel) {
         cat(paste("Starting fork parallel processing with", n_cores, "cores ...\n"))
         ORFs_found <- parallel::mclapply(
             seq_along(genes_red),
