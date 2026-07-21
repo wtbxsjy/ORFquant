@@ -101,6 +101,11 @@ orfquant_mirai_parallel <- function(
                 Sys.getpid()))
 
             ORFquant::load_annotation(ANNOTATION_FILE)
+            # load_annotation() assigns to .GlobalEnv, but mirai daemons may
+            # reset .GlobalEnv between callbacks.  Use <<- to persist objects
+            # in the same long-lived environment as .loaded / .load_data.
+            GTF_annotation <<- GTF_annotation
+            genome_seq <<- genome_seq
             for_ORFquant_data <<- get(load(FOR_ORFQUANT_FILE))
 
             .loaded <<- TRUE
