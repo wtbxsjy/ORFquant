@@ -4635,12 +4635,25 @@ run_ORFquant <- function(
     .safe_field <- function(x, field) {
         val <- x[[field]]
         if (is.null(val)) return(GRanges())
-        # Guard against plain lists that cannot be coerced to GRanges.
-        # ORFquant may return a bare list() for some fields when sequence
-        # extraction fails (e.g. transcript missing from DNAStringSet).
+        # Guard against empty or invalid lists that cannot produce GRanges.
+        # Valid patterns:
+        #   - GRanges / GRangesList / CompressedGRangesList → unlist directly
+        #   - plain list of GRanges-like objects (e.g. ORFs_tx_position) →
+        #     unlist each element then combine
+        #   - bare list() (length 0) → return empty GRanges
         if (is.list(val) && !is(val, "GRanges") && !is(val, "GRangesList") &&
             !is(val, "CompressedGRangesList")) {
-            return(GRanges())
+            if (length(val) == 0) return(GRanges())
+            # Try to unlist each element and combine.  If elements are not
+            # GRanges-like, unlist() will return NULL → fall through to empty.
+            val <- unlist(GRangesList(lapply(val, function(el) {
+                if (is.null(el)) return(GRanges())
+                if (is(el, "GRanges") || is(el, "GRangesList") ||
+                    is(el, "CompressedGRangesList")) return(unlist(el))
+                GRanges()
+            })))
+            if (is.null(val) || length(val) == 0) return(GRanges())
+            return(val)
         }
         val <- unlist(val)
         if (is.null(val) || length(val) == 0) return(GRanges())
@@ -4653,7 +4666,15 @@ run_ORFquant <- function(
         if (is.null(val)) return(GRanges())
         if (is.list(val) && !is(val, "GRanges") && !is(val, "GRangesList") &&
             !is(val, "CompressedGRangesList")) {
-            return(GRanges())
+            if (length(val) == 0) return(GRanges())
+            val <- unlist(GRangesList(lapply(val, function(el) {
+                if (is.null(el)) return(GRanges())
+                if (is(el, "GRanges") || is(el, "GRangesList") ||
+                    is(el, "CompressedGRangesList")) return(unlist(el))
+                GRanges()
+            })))
+            if (is.null(val) || length(val) == 0) return(GRanges())
+            return(val)
         }
         val <- unlist(val)
         if (is.null(val) || length(val) == 0) return(GRanges())
