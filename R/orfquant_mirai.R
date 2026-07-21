@@ -83,6 +83,10 @@ orfquant_mirai_parallel <- function(
     cat(sprintf("[mirai] Broadcasting paths and packages to %d daemons... %s\n",
         n_cores, date()))
 
+    # Pre-load annotation data in each daemon at startup.
+    # <<- inside everywhere({}) pushes objects to the daemon's long-lived
+    # environment, which persists across mirai_map callbacks (unlike .GlobalEnv
+    # which mirai creates fresh for each callback invocation).
     mirai::everywhere({
         suppressPackageStartupMessages({
             library(GenomicRanges)
@@ -91,33 +95,18 @@ orfquant_mirai_parallel <- function(
             library(Rsamtools)
             library(ORFquant)
         })
-
-        # Lazy loader: each daemon loads from disk on first gene region
-        # NOTE: use <<- to push to daemon global env (visible to mirai_map callbacks)
-        .loaded <<- FALSE
-        .load_data <<- function() {
-            if (.loaded) return(invisible(TRUE))
-            cat(sprintf("[daemon %d] Loading annotation + P-sites from disk...\n",
-                Sys.getpid()))
-
-            ORFquant::load_annotation(ANNOTATION_FILE)
-            # load_annotation() uses assign(..., envir=.GlobalEnv), but mirai
-            # gives each callback a fresh .GlobalEnv.  Explicitly store objects
-            # in the long-lived env where .load_data / .loaded persist.
-            .envir <- environment(sys.function())
-            .envir$GTF_annotation <- GTF_annotation
-            .envir$genome_seq  <- genome_seq
-            .envir$for_ORFquant_data <- get(load(FOR_ORFQUANT_FILE))
-            .loaded <<- TRUE
-            cat(sprintf("[daemon %d] Loaded: GTF=%.0fMB genome=%.0fMB pdata=%.0fMB\n",
-                Sys.getpid(),
-                as.numeric(object.size(GTF_annotation)) / 1e6,
-                as.numeric(object.size(genome_seq)) / 1e6,
-                as.numeric(object.size(for_ORFquant_data)) / 1e6))
-            invisible(TRUE)
-        }
+        cat(sprintf("[daemon %d] Loading annotation + P-sites from disk...\n",
+            Sys.getpid()))
+        ORFquant::load_annotation(ANNOTATION_FILE)
+        GTF_annotation <<- GTF_annotation
+        genome_seq <<- genome_seq
+        for_ORFquant_data <<- get(load(FOR_ORFQUANT_FILE))
+        cat(sprintf("[daemon %d] Loaded: GTF=%.0fMB genome=%.0fMB pdata=%.0fMB\n",
+            Sys.getpid(),
+            as.numeric(object.size(GTF_annotation)) / 1e6,
+            as.numeric(object.size(genome_seq)) / 1e6,
+            as.numeric(object.size(for_ORFquant_data)) / 1e6))
     },
-        # These go to daemon global env (accessible from mirai_map callbacks)
         ANNOTATION_FILE       = annotation_file,
         FOR_ORFQUANT_FILE     = for_ORFquant_file,
         genes_red             = genes_red,
@@ -141,7 +130,6 @@ orfquant_mirai_parallel <- function(
         seq_along(genes_red),
         function(g) {
             tryCatch({
-                .load_data()
 
                 gen_region <- genes_red[g]
                 chr_name <- as.character(seqnames(gen_region))
