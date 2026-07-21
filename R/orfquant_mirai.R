@@ -93,8 +93,9 @@ orfquant_mirai_parallel <- function(
         })
 
         # Lazy loader: each daemon loads from disk on first gene region
-        .loaded <- FALSE
-        .load_data <- function() {
+        # NOTE: use <<- to push to daemon global env (visible to mirai_map callbacks)
+        .loaded <<- FALSE
+        .load_data <<- function() {
             if (.loaded) return(invisible(TRUE))
             cat(sprintf("[daemon %d] Loading annotation + P-sites from disk...\n",
                 Sys.getpid()))
@@ -137,11 +138,13 @@ orfquant_mirai_parallel <- function(
             tryCatch({
                 .load_data()
 
-                gen_region <- genes_red[[g]]
+                gen_region <- genes_red[g]
                 chr_name <- as.character(seqnames(gen_region))
 
+                # Match process_gene logic: genetic_codes is a data.frame,
+                # the genetic_code column has no names — use rownames() instead.
                 code_id <- GTF_annotation$genetic_codes$genetic_code[
-                    names(GTF_annotation$genetic_codes$genetic_code) == chr_name
+                    rownames(GTF_annotation$genetic_codes) == chr_name
                 ]
                 genetcd <- getGeneticCode(code_id)
 
@@ -168,7 +171,7 @@ orfquant_mirai_parallel <- function(
             }, error = function(e) {
                 message(sprintf(
                     "\n[mirai] Gene region %d (%s) error: %s",
-                    g, as.character(genes_red[[g]]), conditionMessage(e)
+                    g, as.character(genes_red[g]), conditionMessage(e)
                 ))
                 NULL
             })
