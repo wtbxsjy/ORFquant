@@ -2112,7 +2112,10 @@ select_quantify_ORFs <- function(
     results_ORFs <- selected_ORFs
     feats <- results_ORFs$selected_ORFs_features
     orfs_tx <- results_ORFs$ORFs_tx_position
-    orfs_tx <- lapply(orfs_tx, function(x) {
+    # GRangesList() wrapper: lapply() on a GRangesList returns a plain
+    # list, stripping the class.  Without this, ORFs_tx_position degrades
+    # to a plain list and .safe_field() rejects it → ORFs_tx = 0.
+    orfs_tx <- GRangesList(lapply(orfs_tx, function(x) {
         cols <- mcols(x)
         cols[, c("P_sites", "ORF_pct_P_sites", "ORF_pct_P_sites_pN")] <- NA
         cols[, "unique_features_reads"] <- NumericList("")
@@ -2120,7 +2123,7 @@ select_quantify_ORFs <- function(
         cols[, "scaling_factors"] <- NumericList("")
         mcols(x) <- cols
         x
-    })
+    }))
 
     #first round of unq
 
