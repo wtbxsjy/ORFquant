@@ -99,6 +99,12 @@ orfquant_mirai_parallel_v3 <- function(
             mem_gb, n_cores, per_daemon_gb))
     }
 
+    # Daemons load the P-sites exactly as prepared by run_ORFquant() (merged
+    # across input files and cleaned), not the raw for_ORFquant_file.
+    psite_rds <- tempfile(fileext = ".rds")
+    saveRDS(for_ORFquant_data, psite_rds, compress = FALSE)
+    on.exit(unlink(psite_rds), add = TRUE)
+
     # ---- Step 3: Start daemon pool ----
     cat(sprintf("[mirai v3] Starting %d daemons (mirai %s)... %s\n",
         n_cores, as.character(packageVersion("mirai")), date()))
@@ -164,7 +170,15 @@ orfquant_mirai_parallel_v3 <- function(
         }
 
         # ── Load P-sites data ──
-        for_ORFquant_data <<- get(load(FOR_ORFQUANT_FILE))
+        for_ORFquant_data <<- readRDS(PSITE_RDS)
+        region_index <<- ORFquant:::.orfquant_region_index(
+            for_ORFquant_data,
+            genes_red
+        )
+        annot_index <<- ORFquant:::.orfquant_region_annotation_index(
+            GTF_annotation,
+            genes_red
+        )
         cat(sprintf("[daemon %d] P-sites loaded: class=%s fields=%s psites_len=%d\n",
             Sys.getpid(), class(for_ORFquant_data)[1],
             paste(names(for_ORFquant_data), collapse=","),
@@ -181,7 +195,7 @@ orfquant_mirai_parallel_v3 <- function(
         ))
     },
         ANNOTATION_FILE       = annotation_file,
-        FOR_ORFQUANT_FILE     = for_ORFquant_file,
+        PSITE_RDS             = psite_rds,
         USE_GENOME_REF        = USE_GENOME_REF,
         GENOME_REF_OBJ        = GENOME_REF_OBJ,
         GENOME_PATH_OR_RDS    = GENOME_PATH_OR_RDS,
@@ -209,14 +223,14 @@ orfquant_mirai_parallel_v3 <- function(
     dir.create(result_dir)
     cat(sprintf("[mirai v3] Results directory: %s\n", result_dir))
 
-    result_paths <- mirai::mirai_map(
-        seq_along(genes_red),
-        function(g) {
+    process_region <- function(g) {
             # Resolve from daemon .GlobalEnv — closure's lexical scope is main process,
             # but everywhere() created these in the daemon's global env.
             GTF_annotation <- get("GTF_annotation", envir = .GlobalEnv)
             for_ORFquant_data <- get("for_ORFquant_data", envir = .GlobalEnv)
             genome_seq <- get("genome_seq", envir = .GlobalEnv)
+            region_index <- get("region_index", envir = .GlobalEnv)
+            annot_index <- get("annot_index", envir = .GlobalEnv)
 
             t_start <- as.numeric(Sys.time())
             pid <- Sys.getpid()
@@ -238,7 +252,16 @@ orfquant_mirai_parallel_v3 <- function(
 
                 res <- ORFquant(
                     region = gen_region,
-                    for_ORFquant = for_ORFquant_data,
+                    for_ORFquant = ORFquant:::.orfquant_region_data(
+                        for_ORFquant_data,
+                        region_index,
+                        g
+                    ),
+                    annotation = ORFquant:::.orfquant_region_annotation(
+                        GTF_annotation,
+                        annot_index,
+                        g
+                    ),
                     genetic_code_region = genetcd,
                     orf_find.all_starts = stn.orf_find.all_starts,
                     orf_find.nostarts = stn.orf_find.nostarts,
@@ -283,7 +306,15 @@ orfquant_mirai_parallel_v3 <- function(
                     error = conditionMessage(e)
                 )
             })
-        },
+        }
+    # Bind to the global environment: a closure would otherwise be
+    # serialised with this function's frame (annotation, genome, P-sites)
+    # for every task.
+    environment(process_region) <- globalenv()
+
+    result_paths <- mirai::mirai_map(
+        seq_along(genes_red),
+        process_region,
         RESULT_DIR = result_dir
     )[]
 
@@ -337,4 +368,3 @@ orfquant_mirai_parallel_v3 <- function(
     attr(result_paths, "is_valid") <- is_valid[is_valid]
     return(result_paths)
 }
-# DEBUG PATCH - remove after testing

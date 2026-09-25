@@ -125,16 +125,22 @@ get_orfs <- function(
 ) {
     list_frames <- list()
     length <- nchar(sequence)
+    # Translate the three frames in a single call: translate() rebuilds the
+    # fuzzy genetic code on every invocation, which dominated runtime when
+    # called once per frame.
+    frame_seqs <- DNAStringSet(lapply(0:2, function(u) {
+        subseq(sequence, start = u + 1)
+    }))
+    pepts <- strsplit(
+        as.character(suppressWarnings(translate(
+            frame_seqs,
+            genetic.code = genetic_code_table,
+            if.fuzzy.codon = "solve"
+        ))),
+        split = ""
+    )
     for (u in 0:2) {
-        pept <- NA
-        pept <- unlist(strsplit(
-            as.character(suppressWarnings(translate(
-                subseq(sequence, start = u + 1),
-                genetic.code = genetic_code_table,
-                if.fuzzy.codon = "solve"
-            ))),
-            split = ""
-        ))
+        pept <- pepts[[u + 1]]
 
         starts <- pept == "M"
 
@@ -154,18 +160,13 @@ get_orfs <- function(
             stop_pos <- NA
         }
 
-        st2vect <- c()
-        for (h in seq_along(start_pos)) {
-            st1 <- start_pos[h]
-            diff <- stop_pos - st1
-            diff <- diff[diff > 0]
-            if (length(diff) > 0) {
-                st2 <- st1 + min(diff)
-            }
-            if (length(diff) == 0) {
-                st2 <- NA
-            }
-            st2vect[h] <- st2
+        # First stop downstream of each start (stop_pos is sorted), found
+        # with a binary search instead of scanning all stops per start.
+        st2vect <- rep(NA_real_, length(start_pos))
+        if (!anyNA(stop_pos)) {
+            nxt <- findInterval(start_pos, stop_pos) + 1L
+            has_stop <- !is.na(start_pos) & nxt <= length(stop_pos)
+            st2vect[has_stop] <- stop_pos[nxt[has_stop]]
         }
         st_st <- data.frame(cbind(start_pos, st2vect))
         st_st <- st_st[!is.na(st_st[, 1]), ]
@@ -360,35 +361,39 @@ select_start <- function(ORFs, P_sites_rle, cutoff = NA, cutoff_ave = .5) {
     longest_ORF <- split(ORFs, end(ORFs))
     maxo <- which.max(width(longest_ORF))
     longest_ORF <- unlist(longest_ORF[splitAsList(unname(maxo), names(maxo))])
-    P_sites_rle <- RleList(P_sites_rle)
-    names(P_sites_rle) <- seqnames(ORFs[1])
-    covss <- P_sites_rle[ORFs]
+    # Slice one decompressed coverage vector per ORF rather than
+    # subsetting an RleList by GRanges.
+    psite_vec <- as.vector(P_sites_rle)
+    orf_st <- start(ORFs)
+    orf_en <- end(ORFs)
+    covss <- lapply(seq_along(ORFs), function(i) {
+        psite_vec[orf_st[i]:orf_en[i]]
+    })
     ok <- vapply(covss, function(x) {
-        sum(as.vector(x) > 0) > 2
+        sum(x > 0) > 2
     }, logical(1L))
     if (length(ok) == 0) {
         return(GRanges())
     }
     ORFs <- ORFs[ok]
     covss <- covss[ok]
-    rrr <- lapply(covss, function(x) {
-        fr <- suppressWarnings(matrix(as.vector(x), nrow = 3))
-        fr <- fr[, colSums(fr) > 0, drop = FALSE]
-        if (ncol(fr) == 0) {
-            return(GRanges())
-        }
-        fra <- apply(fr, 2, function(y) {
-            y / sum(y)
-        })
-        infr_freq <- rowMeans(fra)[1]
-        infr <- ((rowSums(fr))[1]) / sum(fr)
-        y <- DataFrame(ave_pct_fr = round(infr_freq * 100, digits = 4))
-        y$pct_fr <- round(infr * 100, digits = 4)
-        y$ave_pct_fr_st <- NA
-        y$pct_fr_st <- NA
-        y
-    })
-    mcols(ORFs) <- do.call(rrr, what = rbind)
+    # Frame statistics as a plain numeric matrix, then a single DataFrame
+    # (rbind-ing one DataFrame per ORF was the bottleneck here).
+    rrr <- vapply(covss, function(x) {
+        fr <- suppressWarnings(matrix(x, nrow = 3))
+        cs <- colSums(fr)
+        fr <- fr[, cs > 0, drop = FALSE]
+        cs <- cs[cs > 0]
+        infr_freq <- sum(fr[1, ] / cs) / length(cs)
+        infr <- sum(fr[1, ]) / sum(fr)
+        c(infr_freq, infr)
+    }, numeric(2L))
+    mcols(ORFs) <- DataFrame(
+        ave_pct_fr = round(rrr[1, ] * 100, digits = 4),
+        pct_fr = round(rrr[2, ] * 100, digits = 4),
+        ave_pct_fr_st = rep(NA, length(ORFs)),
+        pct_fr_st = rep(NA, length(ORFs))
+    )
 
     if (!is.na(cutoff)) {
         covss <- covss[ORFs$pct_fr >= cutoff]
@@ -495,17 +500,17 @@ calc_orf_pval <- function(
         return(ORFs)
     }
 
-    # Phase 5: Pre-allocate all result columns
-    ORFs$pval <- rep(NA_real_, n_orfs)
-    ORFs$pval_uniq <- rep(NA_real_, n_orfs)
-    ORFs$P_sites_raw <- rep(NA_real_, n_orfs)
-    ORFs$P_sites_raw_uniq <- rep(NA_real_, n_orfs)
-    ORFs$P_sites_raw_uniq_mm <- rep(NA_real_, n_orfs)
-    ORFs$pct_fr <- rep(NA_real_, n_orfs)
-    ORFs$ORF_id_tr <- rep(NA_character_, n_orfs)
-
-    # Phase 2: Vectorized ORF ID generation
-    ORFs$ORF_id_tr <- paste(
+    # Result columns are assembled in a DataFrame and assigned to the
+    # GRanges once at the end (each GRanges $<- is a validity-checked copy).
+    # Assignment order below fixes the column order.
+    mc <- mcols(ORFs)
+    mc$pval <- rep(NA_real_, n_orfs)
+    mc$pval_uniq <- rep(NA_real_, n_orfs)
+    mc$P_sites_raw <- rep(NA_real_, n_orfs)
+    mc$P_sites_raw_uniq <- rep(NA_real_, n_orfs)
+    mc$P_sites_raw_uniq_mm <- rep(NA_real_, n_orfs)
+    mc$pct_fr <- rep(NA_real_, n_orfs)
+    mc$ORF_id_tr <- paste(
         as.character(seqnames(ORFs)),
         start(ORFs),
         end(ORFs),
@@ -513,23 +518,25 @@ calc_orf_pval <- function(
     )
 
     # Phase 2: Batch extract coverages for vectorized stats
-    all_psit <- lapply(seq_len(n_orfs), function(i) {
-        as.vector(P_sites_rle[ranges(ORFs[i])])
-    })
-    all_psit_uniq <- lapply(seq_len(n_orfs), function(i) {
-        as.vector(P_sites_uniq_rle[ranges(ORFs[i])])
-    })
-    all_psit_uniq_mm <- lapply(seq_len(n_orfs), function(i) {
-        as.vector(P_sites_uniq_mm_rle[ranges(ORFs[i])])
-    })
+    # Decompress each Rle once and slice plain vectors, instead of
+    # subsetting the GRanges and the Rle once per ORF.
+    orf_st <- start(ORFs)
+    orf_en <- end(ORFs)
+    slice_all <- function(rle) {
+        v <- as.vector(rle)
+        lapply(seq_len(n_orfs), function(i) v[orf_st[i]:orf_en[i]])
+    }
+    all_psit <- slice_all(P_sites_rle)
+    all_psit_uniq <- slice_all(P_sites_uniq_rle)
+    all_psit_uniq_mm <- slice_all(P_sites_uniq_mm_rle)
 
     # Phase 2: Vectorized basic statistics
-    ORFs$P_sites_raw <- vapply(all_psit, sum, numeric(1L))
-    ORFs$P_sites_raw_uniq <- vapply(all_psit_uniq, sum, numeric(1L))
-    ORFs$P_sites_raw_uniq_mm <- vapply(all_psit_uniq_mm, sum, numeric(1L))
+    mc$P_sites_raw <- vapply(all_psit, sum, numeric(1L))
+    mc$P_sites_raw_uniq <- vapply(all_psit_uniq, sum, numeric(1L))
+    mc$P_sites_raw_uniq_mm <- vapply(all_psit_uniq_mm, sum, numeric(1L))
 
     # Phase 2: Vectorized frame percentage calculation
-    ORFs$pct_fr <- vapply(
+    mc$pct_fr <- vapply(
         all_psit,
         function(psit) {
             if (sum(psit) == 0) {
@@ -546,13 +553,16 @@ calc_orf_pval <- function(
     # Phase 4: Early filtering - only process ORFs that might pass
     # Conditions: has P-sites (>0), has >2 positions with signal, and infr > cutoff
     valid_for_spectral <- which(
-        ORFs$P_sites_raw > 0 &
+        mc$P_sites_raw > 0 &
             vapply(all_psit, function(x) sum(x > 0) > 2, logical(1L)) &
-            !is.na(ORFs$pct_fr) &
-            ORFs$pct_fr > cutoff
+            !is.na(mc$pct_fr) &
+            mc$pct_fr > cutoff
     )
 
-    # Process only qualifying ORFs for spectral analysis
+    # Process only qualifying ORFs for spectral analysis; p-values are
+    # collected in plain vectors (GRanges $<- inside the loop is costly).
+    pval <- mc$pval
+    pval_uniq <- mc$pval_uniq
     for (i in valid_for_spectral) {
         psit <- all_psit[[i]]
         psit_uniq <- all_psit_uniq[[i]]
@@ -579,7 +589,7 @@ calc_orf_pval <- function(
             time_bw = bw,
             slepians_values = slepians
         )
-        ORFs$pval[i] <- pf(
+        pval[i] <- pf(
             q = vals[1],
             df1 = 2,
             df2 = (2 * tapers) - 2,
@@ -593,13 +603,16 @@ calc_orf_pval <- function(
             time_bw = bw,
             slepians_values = slepians
         )
-        ORFs$pval_uniq[i] <- pf(
+        pval_uniq[i] <- pf(
             q = vals[1],
             df1 = 2,
             df2 = (2 * tapers) - 2,
             lower.tail = FALSE
         )
     }
+    mc$pval <- pval
+    mc$pval_uniq <- pval_uniq
+    mcols(ORFs) <- mc
 
     return(ORFs)
 }
@@ -664,53 +677,50 @@ detect_translated_orfs <- function(
     cutoff_fr_ave = .5,
     uniq_signal = FALSE
 ) {
-    orfs_gr <- GRangesList()
-    orfs_gen_gr <- GRangesList()
-    annot_tx_cds_gr <- GRangesList()
+    # Per-transcript results are collected in plain lists and combined once
+    # after the loop: growing a GRangesList with [[<- copies it every time.
+    orfs_tx_list <- list()
+    orfs_gen_list <- list()
     cdss <- annotation$cds_txs
     exss <- annotation$exons_txs
     intr_txs <- annotation$introns_txs
     tr_gen <- annotation$trann
     txs_sels <- unique(unlist(selected_txs$txs_selected))
     annot_sels <- annotation$exons_txs[txs_sels]
-    mapp <- mapToTranscripts(P_sites, annot_sels)
-    mapp$reads <- P_sites$score[mapp$xHits]
+    # Map the union of all P-site positions to transcript space once and
+    # derive the three coverages from it (mapToTranscripts has a large
+    # fixed cost per call).
     lens_sels <- sum(width(annot_sels))
-    seqm <- seqlengths(mapp)
-    seqlengths(mapp) <- lens_sels[match(names(seqm), names(lens_sels))]
-    cov_txs <- coverage(mapp, weight = mapp$reads)
-
-    mapp <- mapToTranscripts(P_sites_uniq, annot_sels)
-    if (length(P_sites_uniq) > 0) {
-        mapp$reads <- P_sites_uniq$score[mapp$xHits]
-        seqm <- seqlengths(mapp)
-        seqlengths(mapp) <- lens_sels[match(names(seqm), names(lens_sels))]
-        cov_uniq_txs <- coverage(mapp, weight = mapp$reads)
+    psite_sets <- list(P_sites, P_sites_uniq, P_sites_uniq_mm)
+    all_pos <- unique(do.call(c, lapply(psite_sets, granges)))
+    mapp_all <- mapToTranscripts(all_pos, annot_sels)
+    seqm <- seqlengths(mapp_all)
+    seqlengths(mapp_all) <- lens_sels[match(names(seqm), names(lens_sels))]
+    tx_coverage <- function(ps) {
+        if (length(ps) == 0) {
+            return(coverage(mapp_all[0]))
+        }
+        if (anyDuplicated(granges(ps))) {
+            # duplicated positions: map this set on its own
+            mapp <- mapToTranscripts(ps, annot_sels)
+            mapp$reads <- ps$score[mapp$xHits]
+            seqm <- seqlengths(mapp)
+            seqlengths(mapp) <- lens_sels[match(names(seqm), names(lens_sels))]
+            return(coverage(mapp, weight = mapp$reads))
+        }
+        idx <- match(all_pos, granges(ps))[mapp_all$xHits]
+        keep <- !is.na(idx)
+        coverage(mapp_all[keep], weight = ps$score[idx[keep]])
     }
-
-    if (length(P_sites_uniq) == 0) {
-        cov_uniq_txs <- coverage(mapp)
-    }
-
-    mapp <- mapToTranscripts(P_sites_uniq_mm, annot_sels)
-
-    if (length(P_sites_uniq_mm) == 0) {
-        cov_uniq_mm_txs <- coverage(mapp)
-    }
-
-    if (length(P_sites_uniq_mm) > 0) {
-        mapp$reads <- P_sites_uniq_mm$score[mapp$xHits]
-        seqm <- seqlengths(mapp)
-        seqlengths(mapp) <- lens_sels[match(names(seqm), names(lens_sels))]
-        cov_uniq_mm_txs <- coverage(mapp, weight = mapp$reads)
-    }
+    cov_txs <- tx_coverage(P_sites)
+    cov_uniq_txs <- tx_coverage(P_sites_uniq)
+    cov_uniq_mm_txs <- tx_coverage(P_sites_uniq_mm)
     txs_seqs <- extractTranscriptSeqs(genome_sequence, annot_sels)
 
     for (tx in txs_sels) {
         ex_txs <- exss[tx]
         ex_tx <- ex_txs[[1]]
         intr_tx <- intr_txs[[tx]]
-        nm_cds <- which(names(cdss) == tx)
         #map cds in tx space
 
         covtx <- cov_txs[[tx]]
@@ -769,14 +779,12 @@ detect_translated_orfs <- function(
             next
         }
         #orfs$gene_id<-mapIds(keys = tx,x = annot,column = "GENEID",keytype = "TXNAME")
-        orfs$Protein <- AAStringSet(rep("NA", length(orfs)))
-        for (h in seq_along(orfs)) {
-            orfs$Protein[h] <- AAStringSet(as.character(translate(
-                seq_tx[ranges(orfs)[h]],
-                genetic.code = genetic_code,
-                if.fuzzy.codon = "solve"
-            )))
-        }
+        # One vectorised translate() per transcript instead of one per ORF.
+        orfs$Protein <- AAStringSet(as.character(translate(
+            extractAt(seq_tx, ranges(orfs)),
+            genetic.code = genetic_code,
+            if.fuzzy.codon = "solve"
+        )))
         #orfs$Protein<-AAStringSet(orfs$Protein)
         orfs_gen <- from_tx_togen(
             ORFs = orfs,
@@ -799,17 +807,20 @@ detect_translated_orfs <- function(
         ]))
 
         #must add the other compatible txs, to avoid calculating same stuff
-        for (w in seq_along(orfs)) {
-            orf <- orfs[w]
-            nam <- orf$ORF_id_tr
-            orf$compatible_with <- NA
-            orfs_gr[[nam]] <- orf
-            orfs_gen_gr[[nam]] <- orfs_gen[[nam]]
-        }
+        orfs$compatible_with <- NA
+        orfs_tx_list[[tx]] <- orfs
+        orfs_gen_list[[tx]] <- orfs_gen[orfs$ORF_id_tr]
     }
-    if (length(orfs_gr) == 0) {
+    if (length(orfs_tx_list) == 0) {
         return(list())
     }
+    orfs_all <- do.call(c, unname(orfs_tx_list))
+    orfs_gr <- split(
+        orfs_all,
+        factor(orfs_all$ORF_id_tr, levels = unique(orfs_all$ORF_id_tr))
+    )
+    orfs_gen_gr <- do.call(c, unname(orfs_gen_list))
+    orfs_gen_gr <- orfs_gen_gr[names(orfs_gr)]
     tx_orfs <- unique(vapply(
         strsplit(names(orfs_gr), split = "_"),
         function(x) {
@@ -830,13 +841,11 @@ detect_translated_orfs <- function(
     use[check > 1] <- "shared"
     selected_txs$use_ORFs <- use
 
-    orfs_unq_gr <- GRangesList()
-
-    for (j in names(orfs_gr)) {
+    featexs <- selected_txs[selected_txs$type == "E"]
+    featjuns <- selected_txs[selected_txs$type == "J"]
+    orfs_unq_gr <- lapply(names(orfs_gr), function(j) {
         orf_gen <- orfs_gen_gr[[j]]
         orf_tx <- orfs_gr[[j]]
-        featexs <- selected_txs[selected_txs$type == "E"]
-        featjuns <- selected_txs[selected_txs$type == "J"]
 
         over_tx <- featexs[featexs %over% orf_gen]
         if (length(featjuns) > 0) {
@@ -849,28 +858,30 @@ detect_translated_orfs <- function(
         a <- vapply(over_tx$txs, function(x) {
             length(x[x %in% as.character(seqnames(orf_tx))])
         }, integer(1L))
-        over_tx <- over_tx[a > 0]
-
-        orfs_unq_gr[[j]] <- over_tx
-    }
+        over_tx[a > 0]
+    })
+    names(orfs_unq_gr) <- names(orfs_gr)
+    orfs_unq_gr <- GRangesList(orfs_unq_gr)
 
     if (length(orfs_gr) > 1) {
-        ident_mat <- matrix(
-            FALSE,
-            nrow = length(orfs_gr),
-            ncol = length(orfs_gr)
+        # ORFs with identical genomic structure: compare a string key of
+        # each element's ranges instead of all-pairs identical() calls.
+        gen_unl <- unlist(orfs_gen_gr, use.names = FALSE)
+        gen_keys <- vapply(
+            split(
+                paste(seqnames(gen_unl), start(gen_unl), end(gen_unl),
+                    strand(gen_unl), sep = ":"),
+                factor(
+                    rep(seq_along(orfs_gen_gr), lengths(orfs_gen_gr)),
+                    levels = seq_along(orfs_gen_gr)
+                )
+            ),
+            paste,
+            character(1L),
+            collapse = ","
         )
-        for (i in names(orfs_gr)) {
-            orf <- orfs_gr[[i]]
-            orf$compatible_with <- NA
-            gen <- orfs_gen_gr[[i]]
-
-            ident <- c()
-            for (j in seq_along(orfs_gen_gr)) {
-                ident[j] <- identical(gen, orfs_gen_gr[[j]])
-            }
-            ident_mat[which(names(orfs_gr) == i), ] <- ident
-        }
+        ident_mat <- outer(gen_keys, gen_keys, "==")
+        dimnames(ident_mat) <- NULL
         #diag(ident_mat)<-NA
         ident_mat[lower.tri(ident_mat, diag = TRUE)] <- NA
         ide <- which(ident_mat, arr.ind = TRUE)
@@ -929,13 +940,14 @@ from_tx_togen <- function(ORFs, exons, introns) {
         ignore.strand = FALSE
     )
     strand(orfs_gen) <- strand(exons[[1]][1])
-    list_ma <- GRangesList()
-    for (i in seq_along(ORFs)) {
-        or <- orfs_gen[i]
-        or <- setdiff(or, introns)
-        list_ma[[ORFs$ORF_id_tr[i]]] <- or
+    if (length(ORFs) == 0) {
+        return(GRangesList())
     }
-    return(list_ma)
+    list_ma <- lapply(seq_along(ORFs), function(i) {
+        setdiff(orfs_gen[i], introns)
+    })
+    names(list_ma) <- ORFs$ORF_id_tr
+    return(GRangesList(list_ma))
 }
 
 
@@ -973,7 +985,9 @@ select_txs <- function(
     sel_nsns <- nsns %over% region
     gen_nsns <- nsns[sel_nsns]
     genbin <- gen_nsns
-    genbin$exonic_part <- NULL
+    # exonicParts() (Bioc >= 3.20) also returns tx_id/exon_id/exon_name/
+    # exon_rank; keep only the columns shared with the junction features.
+    mcols(genbin) <- mcols(genbin)[, c("tx_name", "gene_id")]
     genbin$type <- "E"
     genbin$reads <- 0
     genbin$unique_reads <- 0
@@ -2112,10 +2126,12 @@ select_quantify_ORFs <- function(
     results_ORFs <- selected_ORFs
     feats <- results_ORFs$selected_ORFs_features
     orfs_tx <- results_ORFs$ORFs_tx_position
-    # GRangesList() wrapper: lapply() on a GRangesList returns a plain
-    # list, stripping the class.  Without this, ORFs_tx_position degrades
-    # to a plain list and .safe_field() rejects it → ORFs_tx = 0.
-    orfs_tx <- GRangesList(lapply(orfs_tx, function(x) {
+    # Kept as a plain list while it is updated element by element below
+    # ([[<- on a CompressedGRangesList copies the whole object each time);
+    # converted back to a GRangesList on return, otherwise
+    # ORFs_tx_position degrades to a plain list and .safe_field() rejects
+    # it → ORFs_tx = 0.
+    orfs_tx <- lapply(orfs_tx, function(x) {
         cols <- mcols(x)
         cols[, c("P_sites", "ORF_pct_P_sites", "ORF_pct_P_sites_pN")] <- NA
         cols[, "unique_features_reads"] <- NumericList("")
@@ -2123,7 +2139,7 @@ select_quantify_ORFs <- function(
         cols[, "scaling_factors"] <- NumericList("")
         mcols(x) <- cols
         x
-    }))
+    })
 
     #first round of unq
 
@@ -2681,7 +2697,7 @@ select_quantify_ORFs <- function(
         counter <- counter + 1
     }
 
-    results_ORFs$ORFs_tx_position <- orfs_tx
+    results_ORFs$ORFs_tx_position <- GRangesList(orfs_tx)
     results_ORFs$ORFs_genomic_position <- results_ORFs$ORFs_genomic_position[names(
         results_ORFs$ORFs_tx_position
     )]
@@ -2720,11 +2736,8 @@ annotate_splicing <- function(orf_gen, ref_cds) {
 
     if (sum(!refover) > 0) {
         spl_ran <- c(spl_ran, ref_cds[!refover])
-        grliss <- GRangesList()
         refgrl <- ref_cds[!refover]
-        for (gri in seq_along(refgrl)) {
-            grliss[[gri]] <- refgrl[gri]
-        }
+        grliss <- unname(split(refgrl, seq_along(refgrl)))
         spl_ran$ref <- grliss
         spl_ran$spl_type <- "missing_CDS"
         spl_ran$cds_id <- NULL
@@ -2734,8 +2747,14 @@ annotate_splicing <- function(orf_gen, ref_cds) {
 
     orf_gen <- sort(orf_gen)
     if (length(orf_gen) > 0) {
+        # Annotated exons are collected and sorted once at the end (sort()
+        # is stable, so this equals re-sorting after every append).
+        spl_rans <- vector("list", length(orf_gen))
         for (f in seq_along(orf_gen)) {
             ran <- orf_gen[f]
+            # spl_type is resolved in a local variable and set once below:
+            # each GRanges $<- is an S4 validity-checked copy.
+            ran_spl_type <- NULL
             last_ex <- length(orf_gen)
             if (overref[f] == TRUE) {
                 ref_over <- ref_cds[ref_cds %over% ran]
@@ -2743,123 +2762,123 @@ annotate_splicing <- function(orf_gen, ref_cds) {
 
                 if (length(ref_over) > 1) {
                     ran$ref <- GRangesList(ref_over)
-                    ran$spl_type <- "CDS_spanning"
+                    ran_spl_type <- "CDS_spanning"
                     if (as.vector(strand(orf_gen[1])) == "+") {
                         if (start(ran) == min(start(ref_over))) {
                             if (end(ran) == max(end(ref_over))) {
-                                ran$spl_type <- "CDS_spanning;same_5ss;same_3ss"
+                                ran_spl_type <- "CDS_spanning;same_5ss;same_3ss"
                                 if (f == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;same_5ss;same_lastCDS"
+                                    ran_spl_type <- "CDS_spanning;same_5ss;same_lastCDS"
                                 }
                                 if (f == 1) {
-                                    ran$spl_type <- "CDS_spanning;same_firstCDS;same_3ss"
+                                    ran_spl_type <- "CDS_spanning;same_firstCDS;same_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;same_5monoCDS;same_3monoCDS"
+                                    ran_spl_type <- "CDS_spanning;same_5monoCDS;same_3monoCDS"
                                 }
                             }
                             if (end(ran) > max(end(ref_over))) {
-                                ran$spl_type <- "CDS_spanning;same_5ss;down_3ss"
+                                ran_spl_type <- "CDS_spanning;same_5ss;down_3ss"
                                 if (f == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;same_5ss;down_lastCDS"
+                                    ran_spl_type <- "CDS_spanning;same_5ss;down_lastCDS"
                                 }
                                 if (f == 1) {
-                                    ran$spl_type <- "CDS_spanning;same_firstCDS;down_3ss"
+                                    ran_spl_type <- "CDS_spanning;same_firstCDS;down_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;same_5monoCDS;down_3monoCDS"
+                                    ran_spl_type <- "CDS_spanning;same_5monoCDS;down_3monoCDS"
                                 }
                             }
                             if (end(ran) < max(end(ref_over))) {
-                                ran$spl_type <- "CDS_spanning;same_5ss;up_3ss"
+                                ran_spl_type <- "CDS_spanning;same_5ss;up_3ss"
                                 if (f == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;same_5ss;up_lastCDS"
+                                    ran_spl_type <- "CDS_spanning;same_5ss;up_lastCDS"
                                 }
                                 if (f == 1) {
-                                    ran$spl_type <- "CDS_spanning;same_firstCDS;up_3ss"
+                                    ran_spl_type <- "CDS_spanning;same_firstCDS;up_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;same_5monoCDS;up_3monoCDS"
+                                    ran_spl_type <- "CDS_spanning;same_5monoCDS;up_3monoCDS"
                                 }
                             }
                         }
                         if (end(ran) == max(end(ref_over))) {
                             if (start(ran) > min(start(ref_over))) {
-                                ran$spl_type <- "CDS_spanning;down_5ss;same_3ss"
+                                ran_spl_type <- "CDS_spanning;down_5ss;same_3ss"
                                 if (f == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;down_5ss;same_lastCDS"
+                                    ran_spl_type <- "CDS_spanning;down_5ss;same_lastCDS"
                                 }
                                 if (f == 1) {
-                                    ran$spl_type <- "CDS_spanning;down_firstCDS;same_3ss"
+                                    ran_spl_type <- "CDS_spanning;down_firstCDS;same_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;down_5monoCDS;same_3monoCDS"
+                                    ran_spl_type <- "CDS_spanning;down_5monoCDS;same_3monoCDS"
                                 }
                             }
                             if (start(ran) < min(start(ref_over))) {
-                                ran$spl_type <- "CDS_spanning;up_5ss;same_3ss"
+                                ran_spl_type <- "CDS_spanning;up_5ss;same_3ss"
                                 if (f == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;up_5ss;same_lastCDS"
+                                    ran_spl_type <- "CDS_spanning;up_5ss;same_lastCDS"
                                 }
                                 if (f == 1) {
-                                    ran$spl_type <- "CDS_spanning;up_firstCDS;same_3ss"
+                                    ran_spl_type <- "CDS_spanning;up_firstCDS;same_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;up_5monoCDS;same_3monoCDS"
+                                    ran_spl_type <- "CDS_spanning;up_5monoCDS;same_3monoCDS"
                                 }
                             }
                         }
 
                         if (end(ran) > max(end(ref_over))) {
                             if (start(ran) > min(start(ref_over))) {
-                                ran$spl_type <- "CDS_spanning;down_5ss;down_3ss"
+                                ran_spl_type <- "CDS_spanning;down_5ss;down_3ss"
                                 if (f == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;down_5ss;down_lastCDS"
+                                    ran_spl_type <- "CDS_spanning;down_5ss;down_lastCDS"
                                 }
                                 if (f == 1) {
-                                    ran$spl_type <- "CDS_spanning;down_firstCDS;down_3ss"
+                                    ran_spl_type <- "CDS_spanning;down_firstCDS;down_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;down_5monoCDS;down_3monoCDS"
+                                    ran_spl_type <- "CDS_spanning;down_5monoCDS;down_3monoCDS"
                                 }
                             }
                             if (start(ran) < min(start(ref_over))) {
-                                ran$spl_type <- "CDS_spanning;up_5ss;down_3ss"
+                                ran_spl_type <- "CDS_spanning;up_5ss;down_3ss"
                                 if (f == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;up_5ss;down_lastCDS"
+                                    ran_spl_type <- "CDS_spanning;up_5ss;down_lastCDS"
                                 }
                                 if (f == 1) {
-                                    ran$spl_type <- "CDS_spanning;up_firstCDS;down_3ss"
+                                    ran_spl_type <- "CDS_spanning;up_firstCDS;down_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;up_5monoCDS;down_3monoCDS"
+                                    ran_spl_type <- "CDS_spanning;up_5monoCDS;down_3monoCDS"
                                 }
                             }
                         }
 
                         if (end(ran) < max(end(ref_over))) {
                             if (start(ran) > min(start(ref_over))) {
-                                ran$spl_type <- "CDS_spanning;down_5ss;up_3ss"
+                                ran_spl_type <- "CDS_spanning;down_5ss;up_3ss"
                                 if (f == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;down_5ss;up_lastCDS"
+                                    ran_spl_type <- "CDS_spanning;down_5ss;up_lastCDS"
                                 }
                                 if (f == 1) {
-                                    ran$spl_type <- "CDS_spanning;down_firstCDS;up_3ss"
+                                    ran_spl_type <- "CDS_spanning;down_firstCDS;up_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;down_5monoCDS;up_3monoCDS"
+                                    ran_spl_type <- "CDS_spanning;down_5monoCDS;up_3monoCDS"
                                 }
                             }
                             if (start(ran) < min(start(ref_over))) {
-                                ran$spl_type <- "CDS_spanning;up_5ss;up_3ss"
+                                ran_spl_type <- "CDS_spanning;up_5ss;up_3ss"
                                 if (f == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;up_5ss;up_lastCDS"
+                                    ran_spl_type <- "CDS_spanning;up_5ss;up_lastCDS"
                                 }
                                 if (f == 1) {
-                                    ran$spl_type <- "CDS_spanning;up_firstCDS;up_3ss"
+                                    ran_spl_type <- "CDS_spanning;up_firstCDS;up_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;up_5monoCDS;up_3monoCDS"
+                                    ran_spl_type <- "CDS_spanning;up_5monoCDS;up_3monoCDS"
                                 }
                             }
                         }
@@ -2870,119 +2889,119 @@ annotate_splicing <- function(orf_gen, ref_cds) {
                     if (as.vector(strand(orf_gen[1])) == "-") {
                         if (start(ran) == min(start(ref_over))) {
                             if (end(ran) == max(end(ref_over))) {
-                                ran$spl_type <- "CDS_spanning;same_5ss;same_3ss"
+                                ran_spl_type <- "CDS_spanning;same_5ss;same_3ss"
                                 if (f == 1) {
-                                    ran$spl_type <- "CDS_spanning;same_5ss;same_lastCDS"
+                                    ran_spl_type <- "CDS_spanning;same_5ss;same_lastCDS"
                                 }
                                 if (f == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;same_firstCDS;same_3ss"
+                                    ran_spl_type <- "CDS_spanning;same_firstCDS;same_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;same_5monoCDS;same_3monoCDS"
+                                    ran_spl_type <- "CDS_spanning;same_5monoCDS;same_3monoCDS"
                                 }
                             }
                             if (end(ran) > max(end(ref_over))) {
-                                ran$spl_type <- "CDS_spanning;up_5ss;same_3ss"
+                                ran_spl_type <- "CDS_spanning;up_5ss;same_3ss"
                                 if (f == 1) {
-                                    ran$spl_type <- "CDS_spanning;up_5ss;same_lastCDS"
+                                    ran_spl_type <- "CDS_spanning;up_5ss;same_lastCDS"
                                 }
                                 if (f == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;up_firstCDS;same_3ss"
+                                    ran_spl_type <- "CDS_spanning;up_firstCDS;same_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;up_5monoCDS;same_3monoCDS"
+                                    ran_spl_type <- "CDS_spanning;up_5monoCDS;same_3monoCDS"
                                 }
                             }
                             if (end(ran) < max(end(ref_over))) {
-                                ran$spl_type <- "CDS_spanning;down_5ss;same_3ss"
+                                ran_spl_type <- "CDS_spanning;down_5ss;same_3ss"
                                 if (f == 1) {
-                                    ran$spl_type <- "CDS_spanning;down_5ss;same_lastCDS"
+                                    ran_spl_type <- "CDS_spanning;down_5ss;same_lastCDS"
                                 }
                                 if (f == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;down_firstCDS;same_3ss"
+                                    ran_spl_type <- "CDS_spanning;down_firstCDS;same_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;down_5monoCDS;same_3monoCDS"
+                                    ran_spl_type <- "CDS_spanning;down_5monoCDS;same_3monoCDS"
                                 }
                             }
                         }
                         if (end(ran) == max(end(ref_over))) {
                             if (start(ran) > min(start(ref_over))) {
-                                ran$spl_type <- "CDS_spanning;same_5ss;up_3ss"
+                                ran_spl_type <- "CDS_spanning;same_5ss;up_3ss"
                                 if (f == 1) {
-                                    ran$spl_type <- "CDS_spanning;same_5ss;up_lastCDS"
+                                    ran_spl_type <- "CDS_spanning;same_5ss;up_lastCDS"
                                 }
                                 if (f == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;same_firstCDS;up_3ss"
+                                    ran_spl_type <- "CDS_spanning;same_firstCDS;up_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;same_5monoCDS;up_3monoCDS"
+                                    ran_spl_type <- "CDS_spanning;same_5monoCDS;up_3monoCDS"
                                 }
                             }
                             if (start(ran) < min(start(ref_over))) {
-                                ran$spl_type <- "CDS_spanning;same_5ss;down_3ss"
+                                ran_spl_type <- "CDS_spanning;same_5ss;down_3ss"
                                 if (f == 1) {
-                                    ran$spl_type <- "CDS_spanning;same_5ss;down_lastCDS"
+                                    ran_spl_type <- "CDS_spanning;same_5ss;down_lastCDS"
                                 }
                                 if (f == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;same_firstCDS;down_3ss"
+                                    ran_spl_type <- "CDS_spanning;same_firstCDS;down_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;same_5monoCDS;down_3monoCDS"
+                                    ran_spl_type <- "CDS_spanning;same_5monoCDS;down_3monoCDS"
                                 }
                             }
                         }
 
                         if (end(ran) > max(end(ref_over))) {
                             if (start(ran) > min(start(ref_over))) {
-                                ran$spl_type <- "CDS_spanning;up_5ss;up_3ss"
+                                ran_spl_type <- "CDS_spanning;up_5ss;up_3ss"
                                 if (f == 1) {
-                                    ran$spl_type <- "CDS_spanning;up_5ss;up_lastCDS"
+                                    ran_spl_type <- "CDS_spanning;up_5ss;up_lastCDS"
                                 }
                                 if (f == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;up_firstCDS;up_3ss"
+                                    ran_spl_type <- "CDS_spanning;up_firstCDS;up_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;up_5monoCDS;up_3monoCDS"
+                                    ran_spl_type <- "CDS_spanning;up_5monoCDS;up_3monoCDS"
                                 }
                             }
                             if (start(ran) < min(start(ref_over))) {
-                                ran$spl_type <- "CDS_spanning;up_5ss;down_3ss"
+                                ran_spl_type <- "CDS_spanning;up_5ss;down_3ss"
                                 if (f == 1) {
-                                    ran$spl_type <- "CDS_spanning;up_5ss;down_lastCDS"
+                                    ran_spl_type <- "CDS_spanning;up_5ss;down_lastCDS"
                                 }
                                 if (f == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;up_firstCDS;down_3ss"
+                                    ran_spl_type <- "CDS_spanning;up_firstCDS;down_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;up_5monoCDS;down_3monoCDS"
+                                    ran_spl_type <- "CDS_spanning;up_5monoCDS;down_3monoCDS"
                                 }
                             }
                         }
 
                         if (end(ran) < max(end(ref_over))) {
                             if (start(ran) > min(start(ref_over))) {
-                                ran$spl_type <- "CDS_spanning;down_5ss;up_3ss"
+                                ran_spl_type <- "CDS_spanning;down_5ss;up_3ss"
                                 if (f == 1) {
-                                    ran$spl_type <- "CDS_spanning;down_5ss;up_lastCDS"
+                                    ran_spl_type <- "CDS_spanning;down_5ss;up_lastCDS"
                                 }
                                 if (f == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;down_firstCDS;up_3ss"
+                                    ran_spl_type <- "CDS_spanning;down_firstCDS;up_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;down_5monoCDS;up_3monoCDS"
+                                    ran_spl_type <- "CDS_spanning;down_5monoCDS;up_3monoCDS"
                                 }
                             }
                             if (start(ran) < min(start(ref_over))) {
-                                ran$spl_type <- "CDS_spanning;down_5ss;down_3ss"
+                                ran_spl_type <- "CDS_spanning;down_5ss;down_3ss"
                                 if (f == 1) {
-                                    ran$spl_type <- "CDS_spanning;down_5ss;down_lastCDS"
+                                    ran_spl_type <- "CDS_spanning;down_5ss;down_lastCDS"
                                 }
                                 if (f == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;down_firstCDS;down_3ss"
+                                    ran_spl_type <- "CDS_spanning;down_firstCDS;down_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "CDS_spanning;down_5monoCDS;down_3monoCDS"
+                                    ran_spl_type <- "CDS_spanning;down_5monoCDS;down_3monoCDS"
                                 }
                             }
                         }
@@ -2990,123 +3009,123 @@ annotate_splicing <- function(orf_gen, ref_cds) {
                 }
                 if (length(ref_over) == 1) {
                     ran$ref <- GRangesList(ref_over)
-                    ran$spl_type <- NA
+                    ran_spl_type <- NA
                     if (as.vector(strand(orf_gen[1])) == "+") {
                         if (start(ran) == (start(ref_over))) {
                             if (end(ran) == (end(ref_over))) {
-                                ran$spl_type <- "same_5ss;same_3ss"
+                                ran_spl_type <- "same_5ss;same_3ss"
                                 if (f == last_ex) {
-                                    ran$spl_type <- "same_5ss;same_lastCDS"
+                                    ran_spl_type <- "same_5ss;same_lastCDS"
                                 }
                                 if (f == 1) {
-                                    ran$spl_type <- "same_firstCDS;same_3ss"
+                                    ran_spl_type <- "same_firstCDS;same_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "same_5monoCDS;same_3monoCDS"
+                                    ran_spl_type <- "same_5monoCDS;same_3monoCDS"
                                 }
                             }
                             if (end(ran) > (end(ref_over))) {
-                                ran$spl_type <- "same_5ss;down_3ss"
+                                ran_spl_type <- "same_5ss;down_3ss"
                                 if (f == last_ex) {
-                                    ran$spl_type <- "same_5ss;down_lastCDS"
+                                    ran_spl_type <- "same_5ss;down_lastCDS"
                                 }
                                 if (f == 1) {
-                                    ran$spl_type <- "same_firstCDS;down_3ss"
+                                    ran_spl_type <- "same_firstCDS;down_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "same_5monoCDS;down_3monoCDS"
+                                    ran_spl_type <- "same_5monoCDS;down_3monoCDS"
                                 }
                             }
                             if (end(ran) < (end(ref_over))) {
-                                ran$spl_type <- "same_5ss;up_3ss"
+                                ran_spl_type <- "same_5ss;up_3ss"
                                 if (f == last_ex) {
-                                    ran$spl_type <- "same_5ss;up_lastCDS"
+                                    ran_spl_type <- "same_5ss;up_lastCDS"
                                 }
                                 if (f == 1) {
-                                    ran$spl_type <- "same_firstCDS;up_3ss"
+                                    ran_spl_type <- "same_firstCDS;up_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "same_5monoCDS;up_3monoCDS"
+                                    ran_spl_type <- "same_5monoCDS;up_3monoCDS"
                                 }
                             }
                         }
                         if (end(ran) == (end(ref_over))) {
                             if (start(ran) > (start(ref_over))) {
-                                ran$spl_type <- "down_5ss;same_3ss"
+                                ran_spl_type <- "down_5ss;same_3ss"
                                 if (f == last_ex) {
-                                    ran$spl_type <- "down_5ss;same_lastCDS"
+                                    ran_spl_type <- "down_5ss;same_lastCDS"
                                 }
                                 if (f == 1) {
-                                    ran$spl_type <- "down_firstCDS;same_3ss"
+                                    ran_spl_type <- "down_firstCDS;same_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "down_5monoCDS;same_3monoCDS"
+                                    ran_spl_type <- "down_5monoCDS;same_3monoCDS"
                                 }
                             }
                             if (start(ran) < (start(ref_over))) {
-                                ran$spl_type <- "up_5ss;same_3ss"
+                                ran_spl_type <- "up_5ss;same_3ss"
                                 if (f == last_ex) {
-                                    ran$spl_type <- "up_5ss;same_lastCDS"
+                                    ran_spl_type <- "up_5ss;same_lastCDS"
                                 }
                                 if (f == 1) {
-                                    ran$spl_type <- "up_firstCDS;same_3ss"
+                                    ran_spl_type <- "up_firstCDS;same_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "up_5monoCDS;same_3monoCDS"
+                                    ran_spl_type <- "up_5monoCDS;same_3monoCDS"
                                 }
                             }
                         }
 
                         if (end(ran) > (end(ref_over))) {
                             if (start(ran) > (start(ref_over))) {
-                                ran$spl_type <- "down_5ss;down_3ss"
+                                ran_spl_type <- "down_5ss;down_3ss"
                                 if (f == last_ex) {
-                                    ran$spl_type <- "down_5ss;down_lastCDS"
+                                    ran_spl_type <- "down_5ss;down_lastCDS"
                                 }
                                 if (f == 1) {
-                                    ran$spl_type <- "down_firstCDS;down_3ss"
+                                    ran_spl_type <- "down_firstCDS;down_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "down_5monoCDS;down_3monoCDS"
+                                    ran_spl_type <- "down_5monoCDS;down_3monoCDS"
                                 }
                             }
                             if (start(ran) < (start(ref_over))) {
-                                ran$spl_type <- "up_5ss;down_3ss"
+                                ran_spl_type <- "up_5ss;down_3ss"
                                 if (f == last_ex) {
-                                    ran$spl_type <- "up_5ss;down_lastCDS"
+                                    ran_spl_type <- "up_5ss;down_lastCDS"
                                 }
                                 if (f == 1) {
-                                    ran$spl_type <- "up_firstCDS;down_3ss"
+                                    ran_spl_type <- "up_firstCDS;down_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "up_5monoCDS;down_3monoCDS"
+                                    ran_spl_type <- "up_5monoCDS;down_3monoCDS"
                                 }
                             }
                         }
 
                         if (end(ran) < (end(ref_over))) {
                             if (start(ran) > (start(ref_over))) {
-                                ran$spl_type <- "down_5ss;up_3ss"
+                                ran_spl_type <- "down_5ss;up_3ss"
                                 if (f == last_ex) {
-                                    ran$spl_type <- "down_5ss;up_lastCDS"
+                                    ran_spl_type <- "down_5ss;up_lastCDS"
                                 }
                                 if (f == 1) {
-                                    ran$spl_type <- "down_firstCDS;up_3ss"
+                                    ran_spl_type <- "down_firstCDS;up_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "down_5monoCDS;up_3monoCDS"
+                                    ran_spl_type <- "down_5monoCDS;up_3monoCDS"
                                 }
                             }
                             if (start(ran) < (start(ref_over))) {
-                                ran$spl_type <- "up_5ss;up_3ss"
+                                ran_spl_type <- "up_5ss;up_3ss"
                                 if (f == last_ex) {
-                                    ran$spl_type <- "up_5ss;up_lastCDS"
+                                    ran_spl_type <- "up_5ss;up_lastCDS"
                                 }
                                 if (f == 1) {
-                                    ran$spl_type <- "up_firstCDS;up_3ss"
+                                    ran_spl_type <- "up_firstCDS;up_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "up_5monoCDS;up_3monoCDS"
+                                    ran_spl_type <- "up_5monoCDS;up_3monoCDS"
                                 }
                             }
                         }
@@ -3115,119 +3134,119 @@ annotate_splicing <- function(orf_gen, ref_cds) {
                     if (as.vector(strand(orf_gen[1])) == "-") {
                         if (start(ran) == (start(ref_over))) {
                             if (end(ran) == (end(ref_over))) {
-                                ran$spl_type <- "same_5ss;same_3ss"
+                                ran_spl_type <- "same_5ss;same_3ss"
                                 if (f == 1) {
-                                    ran$spl_type <- "same_5ss;same_lastCDS"
+                                    ran_spl_type <- "same_5ss;same_lastCDS"
                                 }
                                 if (f == last_ex) {
-                                    ran$spl_type <- "same_firstCDS;same_3ss"
+                                    ran_spl_type <- "same_firstCDS;same_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "same_5monoCDS;same_3monoCDS"
+                                    ran_spl_type <- "same_5monoCDS;same_3monoCDS"
                                 }
                             }
                             if (end(ran) > (end(ref_over))) {
-                                ran$spl_type <- "up_5ss;same_3ss"
+                                ran_spl_type <- "up_5ss;same_3ss"
                                 if (f == 1) {
-                                    ran$spl_type <- "up_5ss;same_lastCDS"
+                                    ran_spl_type <- "up_5ss;same_lastCDS"
                                 }
                                 if (f == last_ex) {
-                                    ran$spl_type <- "up_firstCDS;same_3ss"
+                                    ran_spl_type <- "up_firstCDS;same_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "up_5monoCDS;same_3monoCDS"
+                                    ran_spl_type <- "up_5monoCDS;same_3monoCDS"
                                 }
                             }
                             if (end(ran) < (end(ref_over))) {
-                                ran$spl_type <- "down_5ss;same_3ss"
+                                ran_spl_type <- "down_5ss;same_3ss"
                                 if (f == 1) {
-                                    ran$spl_type <- "down_5ss;same_lastCDS"
+                                    ran_spl_type <- "down_5ss;same_lastCDS"
                                 }
                                 if (f == last_ex) {
-                                    ran$spl_type <- "down_firstCDS;same_3ss"
+                                    ran_spl_type <- "down_firstCDS;same_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "down_5monoCDS;same_3monoCDS"
+                                    ran_spl_type <- "down_5monoCDS;same_3monoCDS"
                                 }
                             }
                         }
                         if (end(ran) == (end(ref_over))) {
                             if (start(ran) > (start(ref_over))) {
-                                ran$spl_type <- "same_5ss;up_3ss"
+                                ran_spl_type <- "same_5ss;up_3ss"
                                 if (f == 1) {
-                                    ran$spl_type <- "same_5ss;up_lastCDS"
+                                    ran_spl_type <- "same_5ss;up_lastCDS"
                                 }
                                 if (f == last_ex) {
-                                    ran$spl_type <- "same_firstCDS;up_3ss"
+                                    ran_spl_type <- "same_firstCDS;up_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "same_5monoCDS;up_3monoCDS"
+                                    ran_spl_type <- "same_5monoCDS;up_3monoCDS"
                                 }
                             }
                             if (start(ran) < (start(ref_over))) {
-                                ran$spl_type <- "same_5ss;down_3ss"
+                                ran_spl_type <- "same_5ss;down_3ss"
                                 if (f == 1) {
-                                    ran$spl_type <- "same_5ss;down_lastCDS"
+                                    ran_spl_type <- "same_5ss;down_lastCDS"
                                 }
                                 if (f == last_ex) {
-                                    ran$spl_type <- "same_firstCDS;down_3ss"
+                                    ran_spl_type <- "same_firstCDS;down_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "same_5monoCDS;down_3monoCDS"
+                                    ran_spl_type <- "same_5monoCDS;down_3monoCDS"
                                 }
                             }
                         }
 
                         if (end(ran) > (end(ref_over))) {
                             if (start(ran) > (start(ref_over))) {
-                                ran$spl_type <- "up_5ss;up_3ss"
+                                ran_spl_type <- "up_5ss;up_3ss"
                                 if (f == 1) {
-                                    ran$spl_type <- "up_5ss;up_lastCDS"
+                                    ran_spl_type <- "up_5ss;up_lastCDS"
                                 }
                                 if (f == last_ex) {
-                                    ran$spl_type <- "up_firstCDS;up_3ss"
+                                    ran_spl_type <- "up_firstCDS;up_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "up_5monoCDS;up_3monoCDS"
+                                    ran_spl_type <- "up_5monoCDS;up_3monoCDS"
                                 }
                             }
                             if (start(ran) < (start(ref_over))) {
-                                ran$spl_type <- "up_5ss;down_3ss"
+                                ran_spl_type <- "up_5ss;down_3ss"
                                 if (f == 1) {
-                                    ran$spl_type <- "up_5ss;down_lastCDS"
+                                    ran_spl_type <- "up_5ss;down_lastCDS"
                                 }
                                 if (f == last_ex) {
-                                    ran$spl_type <- "up_firstCDS;down_3ss"
+                                    ran_spl_type <- "up_firstCDS;down_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "up_5monoCDS;down_3monoCDS"
+                                    ran_spl_type <- "up_5monoCDS;down_3monoCDS"
                                 }
                             }
                         }
 
                         if (end(ran) < (end(ref_over))) {
                             if (start(ran) > (start(ref_over))) {
-                                ran$spl_type <- "down_5ss;up_3ss"
+                                ran_spl_type <- "down_5ss;up_3ss"
                                 if (f == 1) {
-                                    ran$spl_type <- "down_5ss;up_lastCDS"
+                                    ran_spl_type <- "down_5ss;up_lastCDS"
                                 }
                                 if (f == last_ex) {
-                                    ran$spl_type <- "down_firstCDS;up_3ss"
+                                    ran_spl_type <- "down_firstCDS;up_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "down_5monoCDS;up_3monoCDS"
+                                    ran_spl_type <- "down_5monoCDS;up_3monoCDS"
                                 }
                             }
                             if (start(ran) < (start(ref_over))) {
-                                ran$spl_type <- "down_5ss;down_3ss"
+                                ran_spl_type <- "down_5ss;down_3ss"
                                 if (f == 1) {
-                                    ran$spl_type <- "down_5ss;down_lastCDS"
+                                    ran_spl_type <- "down_5ss;down_lastCDS"
                                 }
                                 if (f == last_ex) {
-                                    ran$spl_type <- "down_firstCDS;down_3ss"
+                                    ran_spl_type <- "down_firstCDS;down_3ss"
                                 }
                                 if (1 == last_ex) {
-                                    ran$spl_type <- "down_5monoCDS;down_3monoCDS"
+                                    ran_spl_type <- "down_5monoCDS;down_3monoCDS"
                                 }
                             }
                         }
@@ -3244,29 +3263,33 @@ annotate_splicing <- function(orf_gen, ref_cds) {
                 if (length(ref_cds) == 0) {
                     ran$ref <- GRangesList(GRanges())
                 }
-                ran$spl_type <- "new_CDS"
+                ran_spl_type <- "new_CDS"
                 if (f == last_ex) {
                     if (as.vector(strand(orf_gen[1])) == "+") {
-                        ran$spl_type <- "new_lastCDS"
+                        ran_spl_type <- "new_lastCDS"
                     }
                     if (as.vector(strand(orf_gen[1])) == "-") {
-                        ran$spl_type <- "new_firstCDS"
+                        ran_spl_type <- "new_firstCDS"
                     }
                 }
                 if (f == 1) {
                     if (as.vector(strand(orf_gen[1])) == "-") {
-                        ran$spl_type <- "new_lastCDS"
+                        ran_spl_type <- "new_lastCDS"
                     }
                     if (as.vector(strand(orf_gen[1])) == "+") {
-                        ran$spl_type <- "new_firstCDS"
+                        ran_spl_type <- "new_firstCDS"
                     }
                 }
                 if (1 == last_ex) {
-                    ran$spl_type <- "new_monoCDS"
+                    ran_spl_type <- "new_monoCDS"
                 }
             }
-            spl_ran <- sort(c(spl_ran, ran))
+            if (!is.null(ran_spl_type)) {
+                ran$spl_type <- ran_spl_type
+            }
+            spl_rans[[f]] <- ran
         }
+        spl_ran <- sort(do.call(c, c(list(spl_ran), spl_rans)))
     }
 
     newspl <- spl_ran$spl_type
@@ -3412,8 +3435,11 @@ annotate_ORFs <- function(
 
     ORFs_tx <- results_ORFs$ORFs_tx_position
     ORFs_gen <- results_ORFs$ORFs_genomic_position
-    ORFs_splice_feats <- GRangesList()
-    ORFs_splice_feats_tomaxORF <- GRangesList()
+    # Element lookups on a CompressedGRangesList are O(total length); use a
+    # plain list for the per-ORF loops below.
+    ORFs_gen_l <- as.list(ORFs_gen)
+    ORFs_splice_feats <- list()
+    ORFs_splice_feats_tomaxORF <- list()
     orfssss_tx <- unlist(GRangesList(ORFs_tx))
     orfssss_tx <- orfssss_tx[!is.na(orfssss_tx$ORF_pct_P_sites)]
     maxORF_orf <- c()
@@ -3441,8 +3467,21 @@ annotate_ORFs <- function(
 
     #compatibilities
 
+    # Give compatible_with its final CharacterList type on the whole list up
+    # front: per-element [[<- on a CompressedGRangesList coerces the value to
+    # the existing column type (logical NA from detect_translated_orfs),
+    # which silently turned the compatible ORF ids into NA.
+    orfs_tx_unl <- unlist(ORFs_tx, use.names = FALSE)
+    orfs_tx_unl$compatible_with <- CharacterList(
+        vector("list", length(orfs_tx_unl))
+    )
+    orfs_tx_unl$compatible_with_longest <- orfs_tx_unl$compatible_with
+    ORFs_tx <- relist(orfs_tx_unl, ORFs_tx)
+    # Per-element [[<- on the compressed list copies it on every call.
+    ORFs_tx <- as.list(ORFs_tx)
+
     for (i in names(ORFs_gen)) {
-        x <- ORFs_gen[[i]]
+        x <- ORFs_gen_l[[i]]
         mapp <- mapToTranscripts(x, transcripts = annotated_exons_tx)
         redmapp <- reduce(split(mapp, seqnames(mapp)))
 
@@ -3622,6 +3661,16 @@ annotate_ORFs <- function(
 
     annotated_cds_tx2 <- annotated_cds_tx
 
+    # Restrict the genome-wide CDS coordinates to the transcripts looked up
+    # below once, instead of scanning all of them for every ORF.
+    txs_lookup <- unique(unlist(lapply(ORFs_tx, function(x) {
+        c(x$transcript_id, x$compatible_tx)
+    })))
+    cds_coords <- Annotation$cds_txs_coords[
+        as.character(seqnames(Annotation$cds_txs_coords)) %in% txs_lookup
+    ]
+    cds_coords_tx <- as.character(seqnames(cds_coords))
+
     #here bulk of work
 
     for (i in seq_along(ORFs_tx)) {
@@ -3631,13 +3680,9 @@ annotate_ORFs <- function(
 
         #annotate tx position
 
-        annotated_ORF <- Annotation$cds_txs_coords[
-            as.character(seqnames(Annotation$cds_txs_coords)) ==
-                orf_tx$transcript_id
-        ]
-        annotated_ORF_compatible <- Annotation$cds_txs_coords[
-            as.character(seqnames(Annotation$cds_txs_coords)) ==
-                orf_tx$compatible_tx
+        annotated_ORF <- cds_coords[cds_coords_tx == orf_tx$transcript_id]
+        annotated_ORF_compatible <- cds_coords[
+            cds_coords_tx == orf_tx$compatible_tx
         ]
 
         if (length(annotated_ORF) == 0) {
@@ -3748,7 +3793,7 @@ annotate_ORFs <- function(
 
         #annotate splice, genomic position and protein termini based on max cds and max pct
 
-        orf_gen <- ORFs_gen[[orf_tx$ORF_id_tr]]
+        orf_gen <- ORFs_gen_l[[orf_tx$ORF_id_tr]]
 
         #1 of multiple overlapping cds per gene
 
@@ -3955,7 +4000,7 @@ annotate_ORFs <- function(
             ref_cds = max_cdsok
         )
         #to maxORF
-        max_pct <- ORFs_gen[[maxORF_orf[ORFs_tx[[i]]$gene_id]]]
+        max_pct <- ORFs_gen_l[[maxORF_orf[ORFs_tx[[i]]$gene_id]]]
         ORFs_tx[[i]]$ref_id_maxORF <- maxORF_orf[ORFs_tx[[i]]$gene_id]
         ORFs_splice_feats_tomaxORF[[orf_tx$ORF_id_tr]] <- annotate_splicing(
             orf_gen = orf_gen,
@@ -3964,7 +4009,10 @@ annotate_ORFs <- function(
     }
 
     results_ORFs$ORFs_tx_position <- ORFs_tx
-    list_spl_res <- list(ORFs_splice_feats, ORFs_splice_feats_tomaxORF)
+    list_spl_res <- list(
+        GRangesList(ORFs_splice_feats),
+        GRangesList(ORFs_splice_feats_tomaxORF)
+    )
     names(list_spl_res) <- c("annotation_wrt_longest", "annotation_wrt_maxORF")
     results_ORFs$ORFs_splice_feats <- list_spl_res
     return(results_ORFs)
@@ -4166,6 +4214,96 @@ ORFquant <- function(
             )
         }
     ))
+}
+
+# Index the P-sites and junctions overlapping each region with a single
+# findOverlaps() per set.  ORFquant() otherwise subsets the genome-wide
+# P-site GRanges with %over% for every region, which is O(regions x P-sites).
+.orfquant_region_index <- function(for_ORFquant, regions) {
+    idx_for <- function(gr) {
+        if (is.null(gr)) {
+            return(NULL)
+        }
+        hits <- findOverlaps(gr, regions)
+        splitAsList(
+            queryHits(hits),
+            factor(subjectHits(hits), levels = seq_along(regions))
+        )
+    }
+    list(
+        P_sites_all = idx_for(for_ORFquant$P_sites_all),
+        P_sites_uniq = idx_for(for_ORFquant$P_sites_uniq),
+        P_sites_uniq_mm = idx_for(for_ORFquant$P_sites_uniq_mm),
+        junctions = idx_for(for_ORFquant$junctions)
+    )
+}
+
+# The for_ORFquant data restricted to region g (same element order as
+# x[x %over% region]), so ORFquant() only scans the local P-sites.
+.orfquant_region_data <- function(for_ORFquant, region_index, g) {
+    out <- for_ORFquant
+    for (nm in names(region_index)) {
+        if (!is.null(region_index[[nm]]) && !is.null(out[[nm]])) {
+            out[[nm]] <- out[[nm]][region_index[[nm]][[g]]]
+        }
+    }
+    out
+}
+
+# Same idea for the annotation: the per-region code subsets genome-wide
+# annotation objects with %over% (exons_bins, cds_genes, cds_txs, exons_txs)
+# or by transcript name.  Index the elements overlapping each region once
+# (ignoring strand, a superset of the strand-aware subsets done downstream)
+# and hand every region a restricted copy of the annotation.
+.orfquant_region_annotation_index <- function(annotation, regions) {
+    idx_for <- function(x) {
+        hits <- findOverlaps(x, regions, ignore.strand = TRUE)
+        splitAsList(
+            queryHits(hits),
+            factor(subjectHits(hits), levels = seq_along(regions))
+        )
+    }
+    comps <- intersect(
+        c("exons_bins", "cds_genes", "cds_txs", "exons_txs"),
+        names(annotation)
+    )
+    index <- lapply(setNames(comps, comps), function(nm) {
+        idx_for(annotation[[nm]])
+    })
+    if (!is.null(annotation$cds_txs_coords)) {
+        crd <- annotation$cds_txs_coords
+        index$cds_txs_coords_by_tx <- split(
+            seq_along(crd),
+            as.character(seqnames(crd))
+        )
+    }
+    index
+}
+
+.orfquant_region_annotation <- function(annotation, annot_index, g) {
+    out <- annotation
+    for (nm in intersect(
+        c("exons_bins", "cds_genes", "cds_txs", "exons_txs"),
+        names(annot_index)
+    )) {
+        out[[nm]] <- annotation[[nm]][annot_index[[nm]][[g]]]
+    }
+    if (!is.null(out$exons_txs)) {
+        txs <- unique(c(names(out$exons_txs), names(out$cds_txs)))
+        if (!is.null(out$introns_txs)) {
+            out$introns_txs <- out$introns_txs[
+                names(out$introns_txs) %in% txs
+            ]
+        }
+        if (!is.null(annot_index$cds_txs_coords_by_tx)) {
+            crd_idx <- annot_index$cds_txs_coords_by_tx
+            out$cds_txs_coords <- out$cds_txs_coords[sort(unlist(
+                crd_idx[intersect(txs, names(crd_idx))],
+                use.names = FALSE
+            ))]
+        }
+    }
+    out
 }
 
 #' Run the ORFquant pipeline
@@ -4504,6 +4642,9 @@ run_ORFquant <- function(
         sep = ""
     ))
 
+    region_index <- .orfquant_region_index(for_ORFquant_data, genes_red)
+    annot_index <- .orfquant_region_annotation_index(GTF_annotation, genes_red)
+
     # Define the worker function that processes a single gene region
     # All required variables are captured in the closure
     # Wrap in tryCatch to provide better error messages
@@ -4524,8 +4665,18 @@ run_ORFquant <- function(
 
                 ORFquant(
                     region = gen_region,
-                    for_ORFquant = for_ORFquant_data,
+                    for_ORFquant = .orfquant_region_data(
+                        for_ORFquant_data,
+                        region_index,
+                        g
+                    ),
                     genetic_code_region = genetcd,
+                    annotation = .orfquant_region_annotation(
+                        annotation,
+                        annot_index,
+                        g
+                    ),
+                    genome_sequence = genome_sequence,
                     orf_find.all_starts = stn.orf_find.all_starts,
                     orf_find.nostarts = stn.orf_find.nostarts,
                     orf_find.start_sel_cutoff = stn.orf_find.start_sel_cutoff,
@@ -4573,14 +4724,22 @@ run_ORFquant <- function(
         )
     } else if (use_parallel) {
         cat(paste("Starting fork parallel processing with", n_cores, "cores ...\n"))
+        # mc.preschedule assigns tasks round-robin: dispatch regions in
+        # decreasing order of P-site count so that the few very large loci do
+        # not end up on the same worker, then restore the original order.
+        region_order <- order(
+            lengths(region_index$P_sites_all),
+            decreasing = TRUE
+        )
         ORFs_found <- parallel::mclapply(
-            seq_along(genes_red),
+            region_order,
             process_gene,
             mc.cores = n_cores,
             mc.preschedule = TRUE,
             mc.silent = TRUE,
             mc.cleanup = FALSE
         )
+        ORFs_found[region_order] <- ORFs_found
     } else {
         ORFs_found <- lapply(seq_along(genes_red), process_gene)
     }
@@ -4821,7 +4980,7 @@ run_ORFquant <- function(
         # empty when no transcript-level ORFs were detected (genomic-only).
         # In that case, still export a valid GTF from ORFs_gen alone so
         # downstream tools (ORF_QC) can detect ORFquant output.
-        ORFs_gen$type = "CDS"
+        ORFs_gen$type <- rep("CDS", length(ORFs_gen))
 
         if (length(ORFs_tx) == 0 || length(selected_txs) == 0) {
             # Genomic-only ORFs: write GTF from ORFs_gen directly so
@@ -4921,7 +5080,7 @@ run_ORFquant <- function(
 
         map_tx_genes <- GTF_annotation$trann
         #ORFs_gen$transcript_id<-names(ORFs_gen)
-        ORFs_gen$type = "CDS"
+        ORFs_gen$type <- rep("CDS", length(ORFs_gen))
         # Filter selected_txs to only include transcripts present in the
         # annotation.  ORF results may reference transcript IDs from
         # different annotation versions or isoforms not in exons_txs.
@@ -5356,6 +5515,12 @@ prepare_annotation_files <- function(
 
         #define exonic bins, including regions overlapping multiple genes
         nsns <- exonicParts(annotation, linked.to.single.gene.only = FALSE)
+        # Drop tx_id/exon_id/exon_name/exon_rank added by exonicParts():
+        # select_txs() only uses tx_name and gene_id.
+        mcols(nsns) <- mcols(nsns)[, intersect(
+            c("tx_name", "gene_id", "exonic_part"),
+            names(mcols(nsns))
+        )]
 
         #define tx_coordinates of ORF boundaries
 

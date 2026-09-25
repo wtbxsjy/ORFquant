@@ -61,6 +61,12 @@ orfquant_mirai_parallel <- function(
     cat(sprintf("[mirai] Memory: %.0f GB available, capping at %d daemons\n",
         mem_gb, n_cores))
 
+    # Daemons load the P-sites exactly as prepared by run_ORFquant() (merged
+    # across input files and cleaned), not the raw for_ORFquant_file.
+    psite_rds <- tempfile(fileext = ".rds")
+    saveRDS(for_ORFquant_data, psite_rds, compress = FALSE)
+    on.exit(unlink(psite_rds), add = TRUE)
+
     # ---- Step 2: Start daemon pool ----
     cat(sprintf("[mirai] Starting %d daemons (mirai %s)... %s\n",
         n_cores, as.character(packageVersion("mirai")), date()))
@@ -100,7 +106,15 @@ orfquant_mirai_parallel <- function(
         ORFquant::load_annotation(ANNOTATION_FILE)
         GTF_annotation <<- GTF_annotation
         genome_seq <<- genome_seq
-        for_ORFquant_data <<- get(load(FOR_ORFQUANT_FILE))
+        for_ORFquant_data <<- readRDS(PSITE_RDS)
+        region_index <<- ORFquant:::.orfquant_region_index(
+            for_ORFquant_data,
+            genes_red
+        )
+        annot_index <<- ORFquant:::.orfquant_region_annotation_index(
+            GTF_annotation,
+            genes_red
+        )
         cat(sprintf("[daemon %d] Loaded: GTF=%.0fMB genome=%.0fMB pdata=%.0fMB\n",
             Sys.getpid(),
             as.numeric(object.size(GTF_annotation)) / 1e6,
@@ -108,7 +122,7 @@ orfquant_mirai_parallel <- function(
             as.numeric(object.size(for_ORFquant_data)) / 1e6))
     },
         ANNOTATION_FILE       = annotation_file,
-        FOR_ORFQUANT_FILE     = for_ORFquant_file,
+        PSITE_RDS             = psite_rds,
         genes_red             = genes_red,
         canonical_start_only  = canonical_start_only,
         unique_reads_only     = unique_reads_only,
@@ -126,9 +140,7 @@ orfquant_mirai_parallel <- function(
     cat(sprintf("[mirai] Processing %d gene regions with %d daemons... %s\n",
         n_regions, n_cores, date()))
 
-    results <- mirai::mirai_map(
-        seq_along(genes_red),
-        function(g) {
+    process_region <- function(g) {
             tryCatch({
 
                 gen_region <- genes_red[g]
@@ -149,7 +161,16 @@ orfquant_mirai_parallel <- function(
 
                 ORFquant(
                     region = gen_region,
-                    for_ORFquant = for_ORFquant_data,
+                    for_ORFquant = ORFquant:::.orfquant_region_data(
+                        for_ORFquant_data,
+                        region_index,
+                        g
+                    ),
+                    annotation = ORFquant:::.orfquant_region_annotation(
+                        GTF_annotation,
+                        annot_index,
+                        g
+                    ),
                     genetic_code_region = genetcd,
                     orf_find.all_starts = stn.orf_find.all_starts,
                     orf_find.nostarts = stn.orf_find.nostarts,
@@ -169,7 +190,13 @@ orfquant_mirai_parallel <- function(
                 NULL
             })
         }
-    )[]
+    # A closure would be serialised together with this function's frame
+    # (annotation, genome, P-sites) for every task, and its free variables
+    # would resolve to those copies.  Bind it to the global environment so
+    # that it uses the objects preloaded on each daemon by everywhere().
+    environment(process_region) <- globalenv()
+
+    results <- mirai::mirai_map(seq_along(genes_red), process_region)[]
 
     # ---- Step 6: Filter failed regions (NULL, try-error, empty list) ----
     # Consistent with mclapply path filtering in orfquant.R
