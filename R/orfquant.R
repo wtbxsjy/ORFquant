@@ -1795,7 +1795,7 @@ select_quantify_ORFs <- function(
         tx_strand = as.character(unique(strand(orfs[[1]])))
     )
     df_genes <- data.frame(tx_name = as.character(names(orfs)), gene_id = "OFF")
-    orfann <- suppressWarnings(makeTxDb(
+    orfann <- suppressWarnings(txdbmaker::makeTxDb(
         transcripts = df_orfs,
         splicings = df_orfs_ex,
         genes = df_genes
@@ -3508,7 +3508,7 @@ annotate_ORFs <- function(
                     Annotation$trann$transcript_id
                 )]
                 pcd <- btps == "protein_coding"
-                if (sum(pcd) > 0) {
+                if (sum(pcd, na.rm = TRUE) > 0) {
                     c(sort(x[pcd])[1], sort(txs[pcd])[1], "protein_coding")
                 } else {
                     c(x[1], txs[1], btps[1])
@@ -3568,7 +3568,7 @@ annotate_ORFs <- function(
                         Annotation$trann$transcript_id
                     )]
                     pcd <- btps == "protein_coding"
-                    if (sum(pcd) > 0) {
+                    if (sum(pcd, na.rm = TRUE) > 0) {
                         c(sort(x[pcd])[1], sort(txs[pcd])[1], "protein_coding")
                     } else {
                         c(x[1], txs[1], btps[1])
@@ -5416,7 +5416,7 @@ prepare_annotation_files <- function(
     if (create_TxDb) {
         cat(paste("Creating the TxDb object ... ", date(), "\n", sep = ""))
 
-        annotation <- makeTxDbFromGFF(
+        annotation <- txdbmaker::makeTxDbFromGFF(
             file = gtf_file,
             format = "gtf",
             chrominfo = seqinfo_genome
